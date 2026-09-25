@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <limits>
 #include <vector>
 #include <omp.h>
 
@@ -94,8 +95,16 @@ struct dmrgci_engine {
     double last_sweep_dE = 0.0;                 // |dE| between the final two sweeps (achieved convergence)
     bool last_hit_max = false;                  // last solve used its full sweep budget with dE > sweep_tol
     std::vector<uint16_t> reorder_perm;         // DMRG lattice order (Fiedler); empty => input order
+    double last_ord_drift = std::numeric_limits<double>::quiet_NaN(); // pinned order's cost over a
+                                                // freshly derived one's; NaN until an order is pinned
+    bool last_cold_fallback = false;            // a warm-armed solve that still ran cold
     double last_dw = 0.0;                       // max discarded weight over the last solve's two-site sweeps at the
                                                 // schedule's final bond dim, noise-free sweeps preferred
+    double last_two_dot_dw = std::numeric_limits<double>::quiet_NaN(); // discarded weight of the last
+                                                // two-site sweep: the truncation the stored MPS carries
+    std::vector<double> last_two_dot_E;         // last two-site sweep's energy per root
+    double last_trunc_de = 0.0;                 // stored MPS's RDM energy minus last_two_dot_E, max over roots
+    double last_resolution = 0.0;               // sqrt of the final sweep's Davidson threshold: the solve's energy scale
 
     dmrgci_engine(int n_act_, int n_elec_, int twos_, int twosz_, int mult_, int n_s_,
                   int print_number_, const dmrg_par &c)

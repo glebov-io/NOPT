@@ -10,6 +10,7 @@
 // basis-change-gated operations are real forwards and supports_civec_rotation() is true.
 
 #include <vector>           // aldet.h/CI.h use std::vector but assume the includer pulls it in
+#include <cmath>            // std::sqrt
 
 #include "casci_solver.h"
 #include "aldet.h"          // aldet_data (full def) + ci_rotate_Pi_pair free function
@@ -65,6 +66,12 @@ public:
         return dav.run(primary, read);
     }
         
+
+    // Davidson stops on dr (squared residual) or de, whichever comes first.
+    double energy_resolution() const override {
+        const double s = std::sqrt(par_->r_conv);
+        return par_->e_conv > s ? par_->e_conv : s;
+    }
 
     // --- reduced density matrices ---
     void calc_DM_diag(double* gamma, int a) override { ci_->calc_DM_diag(gamma, a); }

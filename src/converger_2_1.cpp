@@ -626,6 +626,13 @@ int soscf_engine_MCSCF::init(int n, int ext_n_c, int ext_n_a, int ext_n_v, int e
     return 0;
 }
 
+// Zero step count = the next step() runs as the first one: no curvature pair is formed from the
+// stale previous gradient, and none of the stored ones are used.
+void soscf_engine_MCSCF::reset_history(){
+
+    BFGS.lbfgs_step_num = 0;
+}
+
 soscf_engine_MCSCF::~soscf_engine_MCSCF(){
     
     if(orb_grad    !=NULL) delete[] orb_grad    ;

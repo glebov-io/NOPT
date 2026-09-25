@@ -190,6 +190,8 @@ class soscf_engine_MCSCF
         
         double step(double * VEC, double * BUF);
         
+        void reset_history();   // drop the L-BFGS history
+
         ~soscf_engine_MCSCF();
         
 };

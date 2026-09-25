@@ -1362,7 +1362,10 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     
     int converged=0;
     double rot_step=1.0;
+    double grad_old=0;      // max|g| at the point the current rot_step was taken from
     bool any_maxed=false;   // a macro-iter whose CI solve hit its max sweeps while under-converged
+    bool any_cold=false;    // a macro-iter whose CI solve fell back to a cold start
+    bool any_reset=false;   // a macro-iter whose energy rise restarted the orbital converger
     
     if(IS_SYM){
         int n_ao  = M->n_ao;
@@ -1413,9 +1416,26 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     CAS->print_av_table("CAS_SCF density averaging:");
     fprintf(out_stream,"\n");
     fprintf(out_stream,"Start CAS_SCF iterations\n");
-    fprintf(out_stream,"_________________________________________________________________________________\n");
-    fprintf(out_stream,"  N | E                 | dE         | LAG.ASYM. | ROT.STEP  | N_dav | sweep_dE  |\n");
-    fprintf(out_stream,"____|___________________|____________|___________|___________|_______|___________|\n");
+    // A DMRG solve reports sweeps, a sweep-to-sweep energy and a discarded weight where a
+    // determinant CI reports Davidson iterations and nothing else; the header follows the backend.
+    const bool dmrg_ci = (cas->ci_solver==CISOLVER_DMRG);
+    const char * ni_head = dmrg_ci ? " N_SWP |" : " N_dav |";
+    const char * de_rule = dmrg_ci ? "___________|" : "";
+    const char * de_head = dmrg_ci ? " DMRG_DE   |" : "";
+    const char * dw_rule = dmrg_ci ? "___________|" : "";
+    const char * dw_head = dmrg_ci ? " DMRG_DW   |" : "";
+    // The CI backend's lattice order is pinned across warm solves, so its staleness is a run diagnostic.
+    const bool ord_col = (cas->ci_solver==CISOLVER_DMRG &&
+                          (cas->dmrg.loc_order==DMRG_LOCORDER_FIEDLER ||
+                           cas->dmrg.loc_order==DMRG_LOCORDER_GAOPT));
+    const char * od_rule = ord_col ? "___________|" : "";
+    const char * od_head = ord_col ? " OPTIM.LAT |" : "";
+    fprintf(out_stream,"______________________________________________________________________");
+    if(dmrg_ci)fprintf(out_stream,"________________________");
+    if(ord_col)fprintf(out_stream,"____________");
+    fprintf(out_stream,"\n");
+    fprintf(out_stream,"  N | E                 | dE         | LAG.ASYM. | ROT.STEP  |%s%s%s%s\n",ni_head,de_head,dw_head,od_head);
+    fprintf(out_stream,"____|___________________|____________|___________|___________|_______|%s%s%s\n",de_rule,dw_rule,od_rule);
     disable_print_timers();
     
     while(true){
@@ -1428,9 +1448,40 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
         if(cas->method==2)max_grad_el = j_sd.find_max_el();
         
         
+        // An energy rise nothing accounts for: an honest step moves the energy by |g||kappa| to first
+        // order, and a CI solve resolves it only to a fraction of its truncation energy and to what
+        // its stop thresholds bound. Above all three the CI solution itself moved, and the amplitude
+        // behind it is not an error vector the history can fit. Restart, as SCF DIIS does.
+        bool cold_fb = CAS->CI->last_solve_cold();
+        if(cold_fb) any_cold=true;
+        double step_ref = rot_step;                                    // SOSCF returns the step it applied
+        const double ci_floor  = CAS_RESET_TRUNC_FRAC*CAS->CI->last_solve_trunc_de();
+        const double ci_res    = CAS->CI->energy_resolution();
+        double rise_ref = grad_old*step_ref;
+        if(ci_floor>rise_ref) rise_ref = ci_floor;
+        if(ci_res  >rise_ref) rise_ref = ci_res;
+        const bool diis_reset = (n_iter>0 && !cold_fb && E-E_old>0 && E-E_old > rise_ref); // a cold solve's rise is expected, its reset done
+        if(diis_reset){
+            SOSCF.reset_history();
+            any_reset=true;
+        }
         bool hit_max = CAS->CI->last_solve_hit_max();
         if(hit_max) any_maxed=true;
-        fprintf(out_stream,"%3d |% 18.10f | % .3e | %.3e | %.3e | %3d   | %.3e |%s\n",n_iter,E,E-E_old,max_grad_el, rot_step,n_dav_conv,CAS->CI->last_solve_resid(), hit_max?" *":"");
+        char de_val[16]; de_val[0]='\0';
+        if(dmrg_ci)snprintf(de_val,sizeof(de_val)," %.3e |",CAS->CI->last_solve_resid());
+        char dw_val[16]; dw_val[0]='\0';
+        if(dmrg_ci){
+            const double dw = CAS->CI->last_solve_dw();
+            if(std::isnan(dw))snprintf(dw_val,sizeof(dw_val),"     -     |"); // backend never truncates
+            else              snprintf(dw_val,sizeof(dw_val)," %9.2e |",dw);
+        }
+        char od_val[16]; od_val[0]='\0';
+        if(ord_col){
+            const double od = CAS->CI->last_order_drift(); // FALSE: a cheaper lattice order is in hand
+            if(std::isnan(od))snprintf(od_val,sizeof(od_val),"     -     |"); // nothing pinned to price, or a cold re-pin dropped it
+            else snprintf(od_val,sizeof(od_val)," %9s |",od>DMRG_ORD_DRIFT_TOL?"FALSE":"TRUE");
+        }
+        fprintf(out_stream,"%3d |% 18.10f | % .3e | %.3e | %.3e | %3d   |%s%s%s%s%s%s\n",n_iter,E,E-E_old,max_grad_el, rot_step,n_dav_conv, de_val, dw_val, od_val, hit_max?" *":"", cold_fb?" c":"", diis_reset?" r":"");
         fflush(out_stream);
 //         getchar();
 //         exit(0);
@@ -1443,10 +1494,20 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
 //         converged=0; break;
         dmrg_log_set_tag(dmrg_log_tag::scf);
         n_dav_conv =CAS->CI_calc(0,0,1);
-        if(rot_step  <cas->s_conv){converged=3; break;}
+        // That solve rebuilt the wavefunction from scratch: the energy surface the converger's
+        // history was accumulated on is gone, so extrapolating across it fits a defunct surface.
+        const bool cold_now = CAS->CI->last_solve_cold();
+        if(cold_now){
+            SOSCF.reset_history();
+            any_cold=true;  // this solve may never reach a row of its own
+        }
+        // rot_step was measured against a surface that no longer exists; judge it one iteration
+        // later, once the rebuilt wavefunction has an energy and a gradient of its own.
+        if(!cold_now && rot_step  <cas->s_conv){converged=3; break;}
                 
 //         printf_timer("CAS-CI");
         E_old=E;
+        grad_old=max_grad_el;
         n_iter++;
 //         PrintMatr(M->nat_orb_occ,M->n_act_orb[0],1,1);
     }
@@ -1455,7 +1516,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     
     char * name = new char[BUF_LINE_LENGTH];
     
-    fprintf(out_stream,"____|___________________|____________|___________|___________|_______|___________|\n");
+    fprintf(out_stream,"____|___________________|____________|___________|___________|_______|%s%s%s\n",de_rule,dw_rule,od_rule);
     if(converged==0)fprintf(out_stream,"\nCASSCF did not converge");
     if(converged==1)fprintf(out_stream,"\nEnergy converged");
     if(converged==2)fprintf(out_stream,"\nLagrangian converged");
@@ -1464,6 +1525,13 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     if(any_maxed)
         fprintf(out_stream," * CI solve reached the maximum DMRG sweep count without meeting sweep_tol;\n"
                            "   that iteration's CI vector may be under-converged -- raise $DMRG sweeps or m.\n\n");
+    if(any_cold)
+        fprintf(out_stream," c CI solve fell back to a cold start: the wavefunction was rebuilt from\n"
+                           "   scratch, so the energy steps there and the orbital converger was reset.\n\n");
+    if(any_reset)
+        fprintf(out_stream," r energy rose by more than the applied rotation and the CI resolution account\n"
+                           "   for, consistent with that CI solve landing on a different solution: the\n"
+                           "   converger history was restarted.\n\n");
     printf_timer("CAS_SCF iterations");
     
     

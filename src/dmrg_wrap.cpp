@@ -86,4 +86,9 @@ double block2_casci_wrap::P_state(int)    const { return 0.0; } // parity: defer
 double *block2_casci_wrap::E_states_ptr() const { return impl_->E_states.data(); }
 double block2_casci_wrap::last_solve_resid() const { return impl_->last_sweep_dE; }
 bool block2_casci_wrap::last_solve_hit_max() const { return impl_->last_hit_max; }
+double block2_casci_wrap::last_solve_dw() const { return impl_->last_two_dot_dw; }
+double block2_casci_wrap::last_solve_trunc_de() const { return impl_->last_trunc_de; }
+double block2_casci_wrap::energy_resolution() const { return impl_->last_resolution; }
+double block2_casci_wrap::last_order_drift() const { return impl_->last_ord_drift; }
+bool block2_casci_wrap::last_solve_cold() const { return impl_->last_cold_fallback; }
 void block2_casci_wrap::gen_ext_ind() { /* aldet determinant index tables; n/a for an MPS backend */ }

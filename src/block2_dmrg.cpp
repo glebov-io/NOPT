@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <csignal>
 #include <filesystem>
+#include <iostream>
 #include <map>
 #include <numeric>
 #include <string>
@@ -364,8 +365,11 @@ void nopt_block2::ensure_2rdm(dmrgci_engine &e) {
 
         // This root's true energy, not the solver's pre-truncation sweep value. Taken while the
         // 2-RDM is still in the solver's basis and lattice order, the one e.fcidump is in.
-        if (e.n_elec >= 2)
+        if (e.n_elec >= 2) {
             e.E_states[st] = rdm_energy(e, d2p);
+            if (st < (int)e.last_two_dot_E.size()) // what this root gave up to the tail's truncation
+                e.last_trunc_de = std::max(e.last_trunc_de, e.E_states[st] - e.last_two_dot_E[st]);
+        }
 
         // This root's 1-RDM, D1[p,s] = 1/(N-1) sum_k D2[p,k,k,s]. The trace commutes with the
         // orthogonal un-permutation and back-transform below, which the n_act^2 matrix carries.
@@ -638,6 +642,38 @@ static void symmetrize_active_integrals(const double *h1, const double *h2, int 
                 }
 }
 
+// block2's ordering metric (pyblock2 parser.py): the exchange graph, with the one-electron
+// coupling as a tie-break so a disconnected or tied graph still orders reproducibly.
+static std::vector<double> ordering_metric(const double *h1, const double *h2, int n) {
+    std::vector<double> kmat((size_t)n * n, 0.0);
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < n; j++)
+            if (i != j)
+                kmat[(size_t)i * n + j] =
+                    std::fabs(h2[(((size_t)i * n + j) * n + j) * n + i]) +
+                    1e-7 * std::fabs(h1[(size_t)i * n + j]);
+    return kmat;
+}
+
+// Lattice order of the incoming orbitals under the configured loc_order. `ga_tasks` sizes the GA
+// search; one task prices an order closely enough for a diagnostic, but the order a solve runs on
+// takes the full count. A loc_order that orders nothing is a caller's contract failure.
+static std::vector<uint16_t> fresh_lattice_order(const dmrgci_engine &e, int n,
+                                                 const std::vector<double> &kmat, int ga_tasks) {
+    if (e.cfg.loc_order == DMRG_LOCORDER_GAOPT)
+        return dmrg_gaopt_order(n, kmat, ga_tasks);
+    else if (e.cfg.loc_order == DMRG_LOCORDER_FIEDLER)
+        return OrbitalOrdering::fiedler((uint16_t)n, kmat);
+    else {
+        fprintf(out_stream, "ERROR: fresh_lattice_order: loc_order %d orders nothing (fiedler or gaopt)\n",
+                (int)e.cfg.loc_order);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// GA tasks pricing the drift baseline: it never becomes the solved order, so one is enough.
+static const int DMRG_GAOPT_DRIFT_TASKS = 1;
+
 void block2_casci_wrap::import_integrals(double *aaaa, double *f_act, double e_core) {
     dmrgci_engine &e = *impl_;
     n_act_ = e.n_act;
@@ -680,26 +716,33 @@ void block2_casci_wrap::import_integrals(double *aaaa, double *f_act, double e_c
     // RDMs come back in this order and are un-permuted in ensure_2rdm. A warm solve reuses the
     // retained MPS's order -- that order is a function of the localized orbitals, so it is pinned
     // together with the frozen localization. A cold solve recomputes it.
-    if (e.have_rotation && !e.reorder_perm.empty()) {
+    const bool ordered = (e.cfg.loc_order == DMRG_LOCORDER_FIEDLER ||
+                          e.cfg.loc_order == DMRG_LOCORDER_GAOPT);
+    std::vector<double> kmat;
+    if (ordered)
+        kmat = ordering_metric(h1, h2, n);
+    const bool pinned = (e.have_rotation && !e.reorder_perm.empty());
+    if (pinned) {
         e.fcidump->reorder(e.reorder_perm); // frozen order (warm restart)
     } else {
         e.reorder_perm.clear();
-        if (e.cfg.loc_order == DMRG_LOCORDER_FIEDLER || e.cfg.loc_order == DMRG_LOCORDER_GAOPT) {
-            // block2's metric (pyblock2 parser.py): the exchange graph, with the one-electron
-            // coupling as a tie-break so a disconnected or tied graph still orders reproducibly.
-            std::vector<double> kmat((size_t)n * n, 0.0);
-            for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++)
-                    if (i != j)
-                        kmat[(size_t)i * n + j] =
-                            std::fabs(h2[(((size_t)i * n + j) * n + j) * n + i]) +
-                            1e-7 * std::fabs(h1[(size_t)i * n + j]);
-            if (e.cfg.loc_order == DMRG_LOCORDER_FIEDLER)
-                e.reorder_perm = OrbitalOrdering::fiedler((uint16_t)n, kmat);
-            else if (e.cfg.loc_order == DMRG_LOCORDER_GAOPT)
-                e.reorder_perm = dmrg_gaopt_order(n, kmat);
+        if (ordered) {
+            e.reorder_perm = fresh_lattice_order(e, n, kmat, DMRG_GAOPT_TASKS);
             e.fcidump->reorder(e.reorder_perm);
         }
+    }
+    // Staleness of the lattice order carried into this solve: its ordering cost over that of an order
+    // derived from the incoming orbitals by the same loc_order, so 1 means re-deriving would gain
+    // nothing. Undefined where this solve derived the order itself, and again where a cold fallback
+    // re-pins it inside solve().
+    e.last_ord_drift = std::numeric_limits<double>::quiet_NaN();
+    if (ordered && pinned) {
+        const std::vector<uint16_t> fresh =
+            fresh_lattice_order(e, n, kmat, DMRG_GAOPT_DRIFT_TASKS);
+        const double c_fresh = OrbitalOrdering::evaluate((uint16_t)n, kmat, fresh);
+        if (c_fresh > 0.0)
+            e.last_ord_drift =
+                OrbitalOrdering::evaluate((uint16_t)n, kmat, e.reorder_perm) / c_fresh;
     }
 
     SU2 vacuum(0);
@@ -777,11 +820,75 @@ static void recompute_cold_order(dmrgci_engine &e) {
     for (int k = 0; k < n; k++)
         composed[k] = e.reorder_perm[p2[k]];
     e.reorder_perm.swap(composed);
+    // The drift priced at import describes the order just dropped, not the one this solve runs on.
+    e.last_ord_drift = std::numeric_limits<double>::quiet_NaN();
 
     SU2 vacuum(0);
     e.hamil = std::make_shared<HamiltonianQC<SU2, double>>(vacuum, n, e.orbsym, e.fcidump);
     e.hamil->opf->seq->mode = SeqTypes::Tasked;
     e.mpo = build_qc_mpo(e.hamil, resolve_low_m_opt(e));
+}
+
+// State-averaged occupations of the last solve's 1-RDM, in this solve's site basis and lattice
+// order. Values are on block2's 0..2 scale, one per site. False when no solve has produced a
+// density yet, which is the first solve of a run.
+static bool prev_occupations(const dmrgci_engine &e, std::vector<double> &occ) {
+    const int n = e.n_act;
+    const size_t blk1 = (size_t)n * n;
+    if (e.d1_states.size() != blk1 * (size_t)e.n_s)
+        return false;
+
+    // Weights the host optimizes under; absent a weight vector the roots are equally weighted.
+    std::vector<double> w(e.n_s, 1.0);
+    if ((int)e.w_state.size() == e.n_s)
+        w = e.w_state;
+    double wsum = 0.0;
+    for (int st = 0; st < e.n_s; st++)
+        wsum += w[st];
+
+    std::vector<double> d(blk1, 0.0);
+    for (int st = 0; st < e.n_s; st++) {
+        const double *d1 = e.d1_states.data() + (size_t)st * blk1;
+        for (size_t k = 0; k < blk1; k++)
+            d[k] += w[st] * d1[k];
+    }
+    for (size_t k = 0; k < blk1; k++)
+        d[k] /= wsum;
+
+    // The stored RDM was delocalized on read-out; the sites are the localized orbitals.
+    if (e.localize_on) {
+        std::vector<double> loc(blk1);
+        rotate1(d.data(), e.U_loc.data(), n, loc.data(), /*forward=*/true);
+        d.swap(loc);
+    }
+
+    occ.assign(n, 0.0);
+    for (int k = 0; k < n; k++) {
+        const int p = e.reorder_perm.empty() ? k : (int)e.reorder_perm[k];
+        occ[k] = d[(size_t)p * n + p];
+    }
+
+    // The trace is the active electron count. A mismatch means this is not the quantity
+    // set_bond_dimension_using_occ expects, and a wrong guess is worse than none.
+    double tr = 0.0;
+    for (int k = 0; k < n; k++)
+        tr += occ[k];
+    if (std::fabs(tr - (double)e.n_elec) > 1e-6 * std::max(1.0, (double)e.n_elec)) {
+        std::cout << "NOTE: 1-RDM trace " << tr << " != " << e.n_elec
+                  << " active electrons; restart keeps the flat envelope" << std::endl;
+        return false;
+    }
+    for (int k = 0; k < n; k++) // set_bond_dimension_using_occ asserts 0 <= occ/2 <= 1
+        occ[k] = std::min(2.0, std::max(0.0, occ[k]));
+    return true;
+}
+
+// True when some bond of the envelope keeps no states.
+static bool empty_envelope(const MPSInfo<SU2> &info) {
+    for (int i = 0; i <= info.n_sites; i++)
+        if (info.left_dims[i]->n_states_total == 0 || info.right_dims[i]->n_states_total == 0)
+            return true;
+    return false;
 }
 
 int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
@@ -815,6 +922,12 @@ int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
         // else reuse-only: the reloaded MPS is the (unrotated) warm guess; the short re-solve corrects
         // the basis change. Proven crash-free and == cold; the safe fallback if rotation is declined.
     }
+    // A solve armed for a warm restart -- a rotation was supplied, or the host forced cold with
+    // use_prev_guess -- that ran cold regardless. Read before the cold branch replaces e.mps. Solves
+    // before the warm frame is frozen carry no rotation and are cold by design, so they are not this.
+    e.last_cold_fallback = (e.cfg.warm_start == DMRG_WARM_ON && !warm &&
+                            e.mps != nullptr && e.mps_info != nullptr &&
+                            (e.have_rotation || !use_prev_guess));
     e.have_rotation = false; // consumed; the host supplies a fresh R each warm iteration
     if (!warm && order_frozen && !e.dressed_mpo)
         recompute_cold_order(e); // the order was pinned to a basis we are no longer in; never over a
@@ -851,7 +964,24 @@ int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
                           std::to_string(e.solve_count++);
         // --- initial MPS occupancy (only hf_occ=integral built; others provisioned) ---
         if (e.cfg.hf_occ == DMRG_HF_OCC_INTEGRAL) {
-            e.mps_info->set_bond_dimension((ubond_t)e.cfg.m); // full FCI envelope
+            std::vector<double> occ;
+            if (prev_occupations(e, occ)) {
+                // A re-solve, not a start guess: the sectors follow the density the previous
+                // macro-iteration measured. The fill within them stays random.
+                e.mps_info->set_bond_dimension_using_occ((ubond_t)e.cfg.m, occ);
+                // block2 rounds each seeded sector to round(p*m) with no floor of one state, so
+                // at small m a whole bond can come out empty; the flat envelope keeps every sector.
+                if (empty_envelope(*e.mps_info)) {
+                    e.mps_info->set_bond_dimension((ubond_t)e.cfg.m); // full FCI envelope
+                    std::cout << "MPS restart occupancy: seeded envelope empty at m=" << e.cfg.m
+                              << ", full FCI envelope" << std::endl;
+                } else {
+                    std::cout << "MPS restart occupancy: previous macro-iteration 1-RDM"
+                              << std::endl;
+                }
+            } else {
+                e.mps_info->set_bond_dimension((ubond_t)e.cfg.m); // full FCI envelope
+            }
         } else {
             fprintf(out_stream,
                     "ERROR: DMRG hf_occ option not implemented yet (only 'integral')\n");
@@ -887,6 +1017,9 @@ int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
     // one-site tail appends to the same history -- the tail cannot expand the bond space, so its
     // discarded weight collapses to ~1e-15.
     e.last_dw = 0.0;
+    e.last_two_dot_dw = dmrg->discarded_weights.empty()
+                            ? std::numeric_limits<double>::quiet_NaN()
+                            : (double)dmrg->discarded_weights.back();
     bool dw_clean = false;
     const size_t n_dw = std::min(dmrg->discarded_weights.size(), sch.bond_dims.size());
     for (size_t i = 0; i < n_dw; i++)
@@ -938,6 +1071,18 @@ int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
         e.mps->save_data(); // that reads canonical_form/center/dot builds a two-site layout on it
         adjust_mps_two_dot(e); // ... and back to a two-site center for those consumers
     }
+
+    // The sweeps' Davidson stop is a squared-residual threshold; its square root is the energy scale.
+    e.last_resolution = sch.dav_thrds.empty() ? 0.0 : std::sqrt(sch.dav_thrds.back());
+
+    // Energy the truncation to m costs this solve: the stored MPS's energy over the last two-site
+    // sweep's, worst over roots. The MPS side is its RDM-contracted energy, so ensure_2rdm fills the
+    // difference in; only the two-site side is known here. Nothing measurable without a tail.
+    e.last_trunc_de = 0.0;
+    e.last_two_dot_E.clear();
+    if (DMRG_ONEDOT_TAIL > 0 && n2 >= 1 && (int)dmrg->energies.size() > n2)
+        for (const auto &er : dmrg->energies[n2 - 1])
+            e.last_two_dot_E.push_back((double)er);
 
     // per-root energies (ascending; root 0 = ground state). block2's energy precision is FPLS
     // (long double for FL=double), so bind via auto and narrow to NOPT's double.

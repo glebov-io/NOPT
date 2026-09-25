@@ -17,6 +17,9 @@
 #define CAS_GR_CON_DEFAULT 1e-7
 #define CAS_STEP_CON_DEFAULT 1e-7
 #define CAS_X_MAX_DEFAULT 0.1
+// Converger restart floor: fraction of the CI solve's truncation energy an energy rise must exceed;
+// 3x the largest solve-to-solve scatter measured against it (Cr2 (12,28) DMRG m=500, cold restarts)
+#define CAS_RESET_TRUNC_FRAC 0.05
 #define CAS_PRINT_NUMBER_DEFAULT 10
 #define CAS_METHOD_DEFAULT 1
 
@@ -46,6 +49,7 @@
 #define DMRG_WARM_SWEEPS_DEFAULT 0         // max sweeps for the warm re-solve; 0 = auto (sweeps/2)
 #define DMRG_WARM_NOISE_SCALE_DEFAULT 0.0  // warm-schedule noise as a multiple of the last solve's discarded weight (0 = off)
 #define DMRG_WARM_NOISE_MIN 1e-10          // scaled noise below this: the warm re-solve stays noise-free
+#define DMRG_ORD_DRIFT_TOL 1.005           // lattice counts as optimal below this ordering-cost drift
 #define DMRG_ROT_M_DEFAULT 0               // MPS-rotation time-evolution bond dim (0 = use m)
 #define DMRG_ROT_STEPS_DEFAULT 1           // MPS-rotation TE steps (dt = 1/rot_steps; total time 1)
 #define DMRG_WARM_START_AFTER_DEFAULT 0    // CI solves run cold before the localized frame is frozen

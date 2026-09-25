@@ -7,4 +7,9 @@
 #include <cstdint>
 #include <vector>
 
-std::vector<uint16_t> dmrg_gaopt_order(int n_sites, const std::vector<double> &kmat);
+// pyblock2's task count. The tasks collapse to a handful of distinct orders whose costs spread by
+// ~0.01%, so a reduced count is enough to price an order but not to pick the one a solve runs on.
+constexpr int DMRG_GAOPT_TASKS = 64;
+
+std::vector<uint16_t> dmrg_gaopt_order(int n_sites, const std::vector<double> &kmat,
+                                       int n_tasks = DMRG_GAOPT_TASKS);

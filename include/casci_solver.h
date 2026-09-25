@@ -16,6 +16,7 @@
 // flat-array code; this interface introduces no ownership.
 
 class aldet_data;  // opaque to consumers; only the aldet adapter dereferences it
+#include <limits>
 #include <vector>
 
 class casci_solver {
@@ -106,6 +107,27 @@ public:
     // threshold (DMRG: reached the schedule's max sweeps with |dE| still above sweep_tol). Flags a
     // possibly under-converged CI vector in the CAS-SCF table. Backends that don't track it: false.
     virtual bool last_solve_hit_max() const { return false; }
+    // Staleness of a pinned orbital ordering the backend solves on: its ordering cost over that of
+    // an order derived afresh, in the orbitals of the last solve. 1.0 = as good as fresh, larger =
+    // the pinned lattice has drifted. NaN where nothing was pinned, and for backends with no lattice.
+    virtual double last_order_drift() const { return std::numeric_limits<double>::quiet_NaN(); }
+    // Truncation the last solve's stored wavefunction carries: the discarded weight of its final
+    // variational (two-site) sweep, worst over that sweep's decimations. A state-averaged solve
+    // truncates one averaged density matrix, so this covers all roots. Untruncated backends: NaN.
+    virtual double last_solve_dw() const { return std::numeric_limits<double>::quiet_NaN(); }
+    // Energy the last solve gave up to its truncation: the stored wavefunction's energy minus the
+    // last variational (two-site) sweep's, worst over roots. An energy change below a fraction of
+    // it is within the CI method's own scatter. Untruncated backends: 0.
+    virtual double last_solve_trunc_de() const { return 0.0; }
+    // Energy scale of the last solve set by its own stop thresholds: sqrt(r) for a stop on a
+    // squared residual r, the change itself for a stop on an energy change (aldet: max(de,
+    // sqrt(dr)); DMRG: sqrt of the final sweep's per-site Davidson threshold). Untracked backends: 0.
+    virtual double energy_resolution() const { return 0.0; }
+    // True if the last solve was armed for a warm restart but ran cold anyway (DMRG: the
+    // basis-change rotation declined, or the host withheld it), rebuilding the wavefunction from
+    // scratch: the energy steps there, and an orbital converger's history predates a surface that
+    // no longer exists. A uniformly cold backend -- aldet re-solves every iteration -- is false.
+    virtual bool last_solve_cold() const { return false; }
 
     // --- relating the wavefunction across an active-orbital-basis change (capability-gated) ---
     // All three operations need the same thing: representing/comparing the wavefunction
