@@ -11,6 +11,7 @@
 # include "common_vars.h"
 # include "version.h"
 # include "defaults.h"
+# include "etc.h"
 
 # define max(a,b)  (((a)<(b))?(b):(a))
 # define min(a,b)  (((a)>(b))?(b):(a))
@@ -2593,6 +2594,36 @@ int aldet_data::H_calc(double * H, int n_s){
     return 0;
     
 }
+
+int aldet_data::H_full_calc(double *H){
+    
+    sparsed_CI_vec *   lb = new sparsed_CI_vec[Nd]; 
+    sparsed_CI_vec * H_lb = new sparsed_CI_vec[Nd]; 
+    
+    set_zero_matr(H,Nd*Nd);
+    H_diag_calc();
+    gen_bf(lb,Nd);
+    
+    double * H_lb_d = nullptr;
+    
+    if(do_PT==0)
+        H_mult_sparsed_to_sparsed(H_lb, lb, Nd);
+    else{
+        H_lb_d = new_double_w_check(1LL*Nd*Nd,"dense form of {H x bf} products");
+        H_mult_sparsed_to_dense(H_lb_d, lb, Nd);
+    }
+    
+    if(do_PT==0)
+        CI_ss_mult(H, Nd, lb, Nd, H_lb, Nd);  
+    else
+        CI_sd_mult(H, Nd, lb, Nd, H_lb_d, Nd, Nd);
+
+    
+    return 0;
+        
+}
+
+
 
 int aldet_data::PT_update(){
 //     if(na==0)if(nb==0)return 0;

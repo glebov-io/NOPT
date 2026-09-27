@@ -15,6 +15,11 @@
 # include "block2_casci_wrap.h"
 #endif
 
+double * C_ext_rotate;
+double * V_ext_rotate;
+double * svd_ext_rotate;
+
+
 extern int num_threads;
 
 // extern int testing;
@@ -329,6 +334,38 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
     else{
         T.E2_calc_EE();
     }
+    // printf("%d %d \n", n_ao, n_virt);
+    set_zero_matr(M->orb_energy,n_ao);
+    
+    cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,
+                         n_cor,n_ao,n_cor,1.0,
+                         C_ext_rotate,n_virt,
+                         M->MO_VEC+0*n_ao,n_ao,0.0,
+                         M->BUF,n_ao);    
+    
+    memcpy(M->MO_VEC+0*n_ao,M->BUF,n_cor*n_ao*sizeof(double));
+    memcpy(M->orb_energy,svd_ext_rotate,n_cor*sizeof(double));
+    
+    cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,
+                         n_virt,n_ao,n_virt,1.0,
+                         V_ext_rotate,n_virt,
+                         M->MO_VEC+(n_cor+n_act)*n_ao,n_ao,0.0,
+                         M->BUF,n_ao);    
+    
+    memcpy(M->MO_VEC+(n_cor+n_act)*n_ao,M->BUF,n_virt*n_ao*sizeof(double));
+    memcpy(M->orb_energy+n_cor+n_act,svd_ext_rotate,n_cor*sizeof(double));
+    
+    M->MO_gamess_format();
+    sprintf(name,"%s_CVsvd.out\0",job_name);
+    M->GAMESS_type_out_print(name,-1);
+    fprintf(out_stream,"visualization file: %s\n",name);
+    sprintf(name,"%s_CVsvd.orb\0",job_name);
+    M->MO_print(name);
+    fprintf(out_stream,"data file         : %s\n",name);
+    fprintf(out_stream,"\n");
+
+    exit(0);
+
 
     printf_timer("PT tensors calculation");
     fprintf(out_stream,"_______________________________________________________________________\n\n\n");
@@ -341,7 +378,36 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
                 T.RF_PH,
                 T.RF_PS);
     
-    CAS->CI->solve(1,1,true);
+    /*double * H_tmp = new double[16];
+    double * E_tmp = new double[4];
+    CAS->CI->as_aldet()->H_calc(H_tmp,4);
+    
+    printf("V_AB:\n");
+    PrintMatr(CAS->CI->as_aldet()->act_INTS_AB,n_act*n_act,n_act*n_act,0);
+    printf("V_AB_PT:\n");
+    PrintMatr(T.RF_PV_AB,n_act*n_act,n_act*n_act,0);
+    
+    // printf("H_old:\n");
+    // PrintMatr(H_tmp,4,4,0);
+    
+    
+    if(CAS->CI->as_aldet()->do_PT)CAS->CI->as_aldet()->PT_update();
+    printf("V_AB:\n");
+    PrintMatr(CAS->CI->as_aldet()->act_INTS_AB,n_act*n_act,n_act*n_act,0);
+    
+    CAS->CI->as_aldet()->H_full_calc(H_tmp);
+    printf("H:\n");
+    PrintMatr10(H_tmp,4,4,0);
+    lapack_diag(H_tmp, E_tmp, 4);
+
+    printf("E\n");
+    PrintMatr(H_tmp,4,4,0);
+    PrintMatr10(E_tmp,4,1,0);
+    PrintEnergy(E_tmp,CAS->n_s,1);
+    
+    
+    exit(0);
+    */CAS->CI->solve(1,1,true);
     if(LINEAR)CAS->rotate();
 
 //    }

@@ -244,6 +244,8 @@ class aldet_data
         
         
         int H_calc(double * H, int n_s);
+        int H_full_calc(double *H);
+        
         
         int PT_update();
         int H_mult(int n0, int n_s);

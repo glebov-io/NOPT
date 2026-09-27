@@ -18,7 +18,9 @@
 
 extern int num_threads;
 
-
+extern double * C_ext_rotate;
+extern double * V_ext_rotate;
+extern double * svd_ext_rotate;
 
 
 PT_tensors::PT_tensors(){
@@ -437,14 +439,14 @@ int PT_tensors::E2_calc_IPEA(){
 //     set_zero_matr(RF_PS, N_fit);
     RF_PS=0;
     
-    calc_IPEA_2_CCVV();printf_timer("CCVV res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_CAVV();printf_timer("CAVV res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_AAVV();printf_timer("AAVV res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_CCAV();printf_timer("CCAV res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_CCAA();printf_timer("CCAA res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_CCVV();printf_timer("CCVV res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_CAVV();printf_timer("CAVV res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_AAVV();printf_timer("AAVV res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_CCAV();printf_timer("CCAV res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_CCAA();printf_timer("CCAA res table");fprintf(out_stream,"\n");fflush(out_stream);
     calc_IPEA_2_CV  ();printf_timer("CV   res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_AV  ();printf_timer("AV   res table");fprintf(out_stream,"\n");fflush(out_stream);
-    calc_IPEA_2_CA  ();printf_timer("CA   res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_AV  ();printf_timer("AV   res table");fprintf(out_stream,"\n");fflush(out_stream);
+    // calc_IPEA_2_CA  ();printf_timer("CA   res table");fprintf(out_stream,"\n");fflush(out_stream);
     
     symmetrization(RF_PH, n_a);
     symmetrization(RF_PV_JK, n_a*n_a);
@@ -481,6 +483,18 @@ int PT_tensors::calc_IPEA_2_CV(){
     double * RF_JM;    //  J(aa)*(J-K)
     double * RF_MJ;    // (J-K) * J(aa)
     double * RF_AB;    //  J(ab)* J(ab)
+    
+    double * V_AB_el  = new double  [n_v*n_v];
+    double * RF_JM_el = new double  [n_c*n_v];
+    double * RF_MJ_el = new double  [n_c*n_v];
+    double * RF_AB_el = new double  [n_c*n_v];
+    
+    set_zero_matr(V_AB_el , n_v*n_v);
+    set_zero_matr(RF_JM_el, n_c*n_v);
+    set_zero_matr(RF_MJ_el, n_c*n_v);
+    set_zero_matr(RF_AB_el, n_c*n_v);
+    
+    
     
     RF_MM = new double  [n_a*n_a*n_a*n_a];
     RF_JJ = new double  [n_a*n_a*n_a*n_a];
@@ -525,10 +539,11 @@ int PT_tensors::calc_IPEA_2_CV(){
                         integrals->VA_RI_M,integrals->aux_n_ao,0.0,
                         CAVA,n_a*n_v);
     
-    
-    for(int i=0; i<n_c; i++)
+    int n_f=0;//72;
+    int n_f_v=0;//n_v-100;
+    for(int i=n_f; i<n_c; i++)
     for(int u=0; u<n_a; u++)
-    for(int a=0; a<n_v; a++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++){
         dE=e_c[i]-e_v[a];//is taken negative
         dE=1.0/dE;
@@ -540,12 +555,12 @@ int PT_tensors::calc_IPEA_2_CV(){
               CAVA[((i*n_a+v)*n_v+a)*n_a+w];
               
             RF_AB[((t*n_a+u)*n_a+v)*n_a+w]+=V*dE;
-            
+            if(((t*n_a+u)*n_a+v)*n_a+w==5)RF_AB_el[i*n_v+a]+=V*dE;
         }
     }
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         dE=e_c[i]-e_v[a];//is taken negative
@@ -564,8 +579,8 @@ int PT_tensors::calc_IPEA_2_CV(){
     }
     
 
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         dE=e_c[i]-e_v[a];//is taken negative
@@ -579,12 +594,13 @@ int PT_tensors::calc_IPEA_2_CV(){
                VCAA[((a*n_c+i)*n_a+w)*n_a+v];  //<av|iw>=(ai|wv)
             
             RF_MJ[((t*n_a+u)*n_a+v)*n_a+w]+=V*dE;
+            if(((t*n_a+u)*n_a+v)*n_a+w==5)RF_MJ_el[i*n_v+a]+=V*dE;
         }
     }
     
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         dE=e_c[i]-e_v[a];
@@ -598,12 +614,13 @@ int PT_tensors::calc_IPEA_2_CV(){
                CAVA[((i*n_a+v)*n_v+a)*n_a+w]); //<av|wi>=(iv|aw)
             
             RF_JM[((t*n_a+u)*n_a+v)*n_a+w]+=V*dE;
+            if(((t*n_a+u)*n_a+v)*n_a+w==5)RF_JM_el[i*n_v+a]+=V*dE;
         }
     }
 
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         dE=e_c[i]-e_v[a];
@@ -621,8 +638,8 @@ int PT_tensors::calc_IPEA_2_CV(){
 //     printf_timer("opt table");
     
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         //(<it|au>-<iu|at>)*H[i,a]
@@ -633,8 +650,8 @@ int PT_tensors::calc_IPEA_2_CV(){
         RF_MH[t*n_a+u]+=V/dE;
     }
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         //(<it|au>-<iu|at>)*H[i,a]
@@ -647,8 +664,8 @@ int PT_tensors::calc_IPEA_2_CV(){
         RF_HM[t*n_a+u]+=V/dE;
     }
 
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++){
         //(<it|au>-<iu|at>)*H[i,a]
@@ -659,8 +676,8 @@ int PT_tensors::calc_IPEA_2_CV(){
         
     }
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++)
     for(int t=0  ;t<n_a;t++)
     for(int u=0  ;u<n_a;u++){
         //(<it|au>-<iu|at>)*H[i,a]
@@ -672,8 +689,8 @@ int PT_tensors::calc_IPEA_2_CV(){
     }
     
     
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++){
+    for(int i=n_f; i<n_c; i++)
+    for(int a=0; a<n_v-n_f_v; a++){
         //H[i,a]*H[i,a]
         V=H_CV[i*n_v+a]*H_CV[i*n_v+a]; 
         dE=e_c[i]-e_v[a];
@@ -703,12 +720,48 @@ int PT_tensors::calc_IPEA_2_CV(){
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
     for(int w=0; w<n_a; w++)
-        RF_PV_AB[((t*n_a+u)*n_a+v)*n_a+w]+=+RF_JM[((t*n_a+v)*n_a+u)*n_a+w]
-                                           +RF_MJ[((t*n_a+v)*n_a+u)*n_a+w]
-                                           +RF_JM[((u*n_a+w)*n_a+t)*n_a+v]
-                                           +RF_MJ[((u*n_a+w)*n_a+t)*n_a+v]
-                                           -RF_AB[((t*n_a+w)*n_a+u)*n_a+v]
-                                           -RF_AB[((u*n_a+v)*n_a+t)*n_a+w];
+        //t=0,u=0,v=1,w=1
+        RF_PV_AB[((t*n_a+u)*n_a+v)*n_a+w]+=+RF_JM[((t*n_a+v)*n_a+u)*n_a+w] //((0*n_a+1)*n_a+0)*n_a+1=5
+                                           +RF_MJ[((t*n_a+v)*n_a+u)*n_a+w] //((0*n_a+1)*n_a+0)*n_a+1=5
+                                           +RF_JM[((u*n_a+w)*n_a+t)*n_a+v] //((0*n_a+1)*n_a+0)*n_a+1=5
+                                           +RF_MJ[((u*n_a+w)*n_a+t)*n_a+v] //((0*n_a+1)*n_a+0)*n_a+1=5
+                                           -RF_AB[((t*n_a+w)*n_a+u)*n_a+v] //((0*n_a+1)*n_a+0)*n_a+1=5
+                                           -RF_AB[((u*n_a+v)*n_a+t)*n_a+w];//((0*n_a+1)*n_a+0)*n_a+1=5
+    for(int i=0; i<n_c; i++)
+    for(int a=0; a<n_v; a++)
+        //t=0,u=0,v=1,w=1
+        V_AB_el[i*n_v+a]+=+RF_JM_el[i*n_v+a] 
+                          +RF_MJ_el[i*n_v+a] 
+                          +RF_JM_el[i*n_v+a] 
+                          +RF_MJ_el[i*n_v+a] 
+                          -RF_AB_el[i*n_v+a] 
+                          -RF_AB_el[i*n_v+a];
+    
+    double tmp=0;
+    for(int i=0; i<n_c; i++)
+    for(int a=0; a<n_v; a++)
+        tmp+=V_AB_el[i*n_v+a];
+    
+    printf("V= %e\n",tmp);
+    // PrintMatr(V_AB_el,n_c,n_v,0);
+    
+    C_ext_rotate   = new double  [n_v*n_v];
+    V_ext_rotate   = new double  [n_v*n_v];
+    svd_ext_rotate = new double  [n_v    ];
+    double * L   = C_ext_rotate  ;
+    double * R   = V_ext_rotate  ;
+    double * svd = svd_ext_rotate;
+    
+    lapack_svd(V_AB_el, L, R, svd, n_v);
+    
+    // printf("L:\n");
+    // PrintMatr(L,n_v,n_v,0);
+    
+    // printf("R:\n");
+    // PrintMatr(R,n_v,n_v,0);
+    
+    // printf("S:\n");    
+    // PrintMatr(svd,n_v,1,0);
     
 //     set_zero_matr(RF_PH,N_fit*n_a*n_a);
     for(int t=0; t<n_a; t++)
