@@ -9,7 +9,10 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 IMG=nopt-grad-builder:${ARCH:-x86-64-v4}-dmrg${DMRG:-true}
+# libint the tree was built with (build.sh records it)
+MODE=$(cat "$ROOT/.libint_mode" 2>/dev/null || echo image)
 LIBDIRS=/opt/libint/lib:/opt/block2/lib; MOUNT=
+if [ "$MODE" != image ]; then MOUNT="-v $MODE:/opt/libint-deriv:ro"; LIBDIRS=/opt/libint-deriv/lib:$LIBDIRS; fi
 PROG=${PROG:-run_sQM}
 DIR=$(cd "$1" && pwd); INP=$2; shift 2
 # NOPT_MEASURE=1: report the wall time and the peak resident memory of the program (stderr)

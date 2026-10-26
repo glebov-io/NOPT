@@ -11,7 +11,7 @@ tests/gradients/regress.py --update      # rewrite reference/*.json from this ru
 
 `build.sh` takes its dependencies (libint, libgrpp, block2, OpenBLAS) from the `builder` stage of
 `dockerbuild/Dockerfile` (Docker caches them) and compiles NOPT from the working tree, so make
-rebuilds incrementally. Knobs: `ARCH`, `GTO_MAX`, `DMRG`, `JOBS`, `TARGETS`. It writes a
+rebuilds incrementally. Knobs: `ARCH`, `GTO_MAX`, `DMRG`, `JOBS`, `TARGETS`, `LIBINT_DERIV`. It writes a
 gitignored `Makefile.vars` with the container paths if there is none. The programs run only inside
 that image; `[PROG=<program>] run.sh <dir> <input> [args]` starts one (default `run_sQM`).
 
@@ -36,8 +36,25 @@ Cases (`cases.json`): `c4h6_xmc`, `cis`, `dsrg4ene_aldet` (all from `examples/`)
 (`fixtures/h2o`, RHF). The golden files come from GCC 13, x86-64-v4, OpenBLAS
 0.3.26 (OpenMP); another CPU or BLAS can differ in the last digits, hence the 1e-9 Eh tolerance.
 
+## Derivative libint
+
+The analytic gradients need a libint with first derivatives. The libint of the published images is
+energy-only; with it the gradient code refuses with a message. `libint-deriv.sh gen|compile` builds one
+with first derivatives of the 1-body, 4-, 3- and 2-center integrals at `MAX_AM=7` (the pinned commit of
+the images), in a host directory (`~/nopt-libint-deriv`), not in an image; `build.sh` uses it when it
+exists (`LIBINT_DERIV=` forces the image libint). Generation takes about 30 min (one thread, <3 GB,
+14 675 files / 1.9 GB of source); compilation needs about 2 GB of RAM per job (12 jobs in 26 GB);
+the install is 236 MB. `ERI4=0` skips the 4-center derivatives (11 127 files / 1.3 GB), enough for RI.
+
+`libint_deriv_smoke.cpp` checks the result against finite differences and prints the buffer
+ordering:
+
+    g++-13 -O1 -std=c++17 -I<install>/include -I/usr/include/eigen3 libint_deriv_smoke.cpp \
+        -L<install>/lib -lint2 -Wl,-rpath,<install>/lib && ./a.out
+
 ## Component checks
 
 | script / program | checks |
 |---|---|
+| `derivtest.sh` | every derivative-integral contraction against 4th-order finite differences of the integrals |
 | `PROG=run_ritest run.sh <dir> <any.inp>` | density-fitting adjoints on random data: L-only, V-only and both, a negative control, the J/K seeds, the adjoint of V^-1/2 |

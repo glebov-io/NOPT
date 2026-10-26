@@ -13,3 +13,6 @@
 # Per-machine build config: paths differ on every machine, so it is not tracked.
 # Copy the template and edit it:  cp Makefile_example.vars Makefile.vars
 /Makefile.vars
+
+# records which libint the objects were built with (tests/gradients/build.sh)
+/.libint_mode
