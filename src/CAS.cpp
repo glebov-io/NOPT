@@ -3,6 +3,7 @@
 
 //doCI
 # include "blas_link.h"
+# include "energy_result.h"
 # include "molecule.h"
 # include "matr.h"
 # include "doCI_matr.h"
@@ -1585,6 +1586,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     
     fprintf(out_stream,"\n\nCAS_SCF Energy summary:\n");
     PrintEnergy(CAS->CI->E_states_ptr(),CAS->n_s, 1);
+    energy_result_record("cas_scf","",-1,CAS->CI->E_states_ptr(),CAS->n_s,CAS->wstate_actual.data(),(int)CAS->wstate_actual.size());
     
     CAS->print_properties("CAS_SCF");
 
