@@ -1,3 +1,4 @@
+#include <algorithm>
 // Adjoint (transpose with respect to the resolvent tables) of the contraction routines of res_fit.cpp:
 //   forward:  P[i_s,j_s] += ddot(L, R+S, C) * ci[det*ld+i_s] * sign * ci[detext*ld+j_s]      (for every term of every routine)
 //   adjoint:  Rbar[S+l]  += C[l] * sign * ci[det*ld+i_s] * sum_j W[i_s,j] ci[detext*ld+j]     (same loops, same terms)
@@ -21,8 +22,10 @@ extern int n_fit_pol;
 namespace{
 // One term of the forward routines:   T = ddot(L, R+S, C) * sign * CI_0[i_s] * sum_j W[i_s,j] CI_e[j]   (for every i_s), with R the table row of the term.
 // Accumulated: table seeds (o.Rbar), CI seeds (o.cibar; CI_0 = ci + k*ld, CI_e = ci + k'*ld), weight seeds (o.Cbar[(det*n_s+i_s)*np1 + l]).
-inline void adj_term(const ResFitAdjOut & o, size_t row, int n_s, const double * W, const double * ci, const double * CI_0, const double * CI_e, double sign, int det,
+inline void adj_term(const ResFitAdjOut & o, size_t idx, int n_s, const double * W, const double * ci, const double * CI_0, const double * CI_e, double sign, int det,
                      const int * L_fit, const int * S_fit, const double * C_fit){
+    const size_t row = idx * o.Nf;                  // the forward tables: all grid points
+    const size_t rowb = idx * o.nb;                 // the seeds: grid points f0 .. f0 + nb - 1
     const int np1 = 2 * n_fit_pol + 1;
     for(int i_s = 0; i_s < n_s; i_s++){
         double we = 0.0;
@@ -32,8 +35,10 @@ inline void adj_term(const ResFitAdjOut & o, size_t row, int n_s, const double *
         const double coef = sign * CI_0[i_s] * we;
         if(o.Rbar){
             for(int l = 0; l < L; l++){
+                const int f = S + l - o.f0;
+                if(f < 0 || f >= o.nb) continue;
 #pragma omp atomic
-                o.Rbar[row + S + l] += coef * C[l];
+                o.Rbar[rowb + f] += coef * C[l];
             }
         }
         if(o.Rfwd && (o.cibar || o.Cbar)){
@@ -89,7 +94,7 @@ int res_fit_adj_1body(const double * W, int n_s, int ld, double * ci, int N, int
                     auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                     sign = sign1 * sign2;
                     for(int j_CI = 0; j_CI < Nb; j_CI++)
-                        adj_term(o, (size_t)(t * N + w) * N_fit, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
+                        adj_term(o, (size_t)(t * N + w), n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
                     bit_a[w] = 0;
                 }
                 else
@@ -130,7 +135,7 @@ int res_fit_adj_2body_AA(const double * W, int n_s, int ld, double * ci, int N, 
                                     bit_a[w] = 1;
                                     sign = sign1 * sign2 * sign3;
                                     auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
-                                    const size_t R = (size_t)(((u * N + t) * N + v) * N + w) * N_fit;
+                                    const size_t R = (size_t)(((u * N + t) * N + v) * N + w);
                                     for(int j_CI = 0; j_CI < Nb; j_CI++)
                                         adj_term(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
                                     bit_a[w] = 0;
@@ -174,21 +179,21 @@ int res_fit_adj_2body_AB(const double * W, int n_s, int ld, double * ci, int N, 
                     int l_CI = Ib[j_CI];
                     const double * CI_0 = ci + (k_CI * Nb + l_CI) * ld;
                     const int det = k_CI * Nb + l_CI;
-                    adj_term(o, (size_t)(((t * N + u) * N + t) * N + u) * N_fit, n_s, W, ci, CI_0, CI_0, 1.0, det, L_fit, S_fit, C_fit);
+                    adj_term(o, (size_t)(((t * N + u) * N + t) * N + u), n_s, W, ci, CI_0, CI_0, 1.0, det, L_fit, S_fit, C_fit);
                     for(int n = 0; n < (N - nb); n++){
                         int * ind_n = Ib_friends + j_CI * (N - nb) * 3 + n * 3;
                         const double * CI_e = ci + (k_CI * Nb + ind_n[0]) * ld;
-                        adj_term(o, (size_t)(((t * N + u) * N + t) * N + ind_n[1]) * N_fit, n_s, W, ci, CI_0, CI_e, (double)ind_n[2], det, L_fit, S_fit, C_fit);
+                        adj_term(o, (size_t)(((t * N + u) * N + t) * N + ind_n[1]), n_s, W, ci, CI_0, CI_e, (double)ind_n[2], det, L_fit, S_fit, C_fit);
                     }
                     for(int m = 0; m < (N - na); m++){
                         int * ind_m = Ia_friends + i_CI * (N - na) * 3 + m * 3;
                         const double * CI_e = ci + (ind_m[0] * Nb + l_CI) * ld;
-                        adj_term(o, (size_t)(((t * N + u) * N + ind_m[1]) * N + u) * N_fit, n_s, W, ci, CI_0, CI_e, (double)ind_m[2], det, L_fit, S_fit, C_fit);
+                        adj_term(o, (size_t)(((t * N + u) * N + ind_m[1]) * N + u), n_s, W, ci, CI_0, CI_e, (double)ind_m[2], det, L_fit, S_fit, C_fit);
                         for(int n = 0; n < (N - nb); n++){
                             int * ind_n = Ib_friends + j_CI * (N - nb) * 3 + n * 3;
                             const double * CI_e2 = ci + (ind_m[0] * Nb + ind_n[0]) * ld;
                             sign = ind_m[2] * ind_n[2];
-                            adj_term(o, (size_t)(((t * N + u) * N + ind_m[1]) * N + ind_n[1]) * N_fit, n_s, W, ci, CI_0, CI_e2, sign, det, L_fit, S_fit, C_fit);
+                            adj_term(o, (size_t)(((t * N + u) * N + ind_m[1]) * N + ind_n[1]), n_s, W, ci, CI_0, CI_e2, sign, det, L_fit, S_fit, C_fit);
                         }
                     }
                 }
@@ -229,7 +234,7 @@ int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N,
                                             bit_a[y] = 1;
                                             auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                                             sign = sign1 * sign2 * sign3 * sign4;
-                                            const size_t R = (size_t)(((((t * N + u) * N + v) * N + y) * N + x) * N + w) * N_fit;
+                                            const size_t R = (size_t)(((((t * N + u) * N + v) * N + y) * N + x) * N + w);
                                             for(int j_CI = 0; j_CI < Nb; j_CI++)
                                                 adj_term(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
                                             bit_a[x] = 0;
@@ -296,7 +301,7 @@ int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, 
                                                 auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                                                 auto j_CIext = get_ind_from_ON(bit_b, N, nb, fb, buf);
                                                 sign = sign1 * sign2 * sign4 * sign5 * sign6;
-                                                const size_t R = (size_t)(((((t * N + u) * N + v) * N + w) * N + x) * N + y) * N_fit;
+                                                const size_t R = (size_t)(((((t * N + u) * N + v) * N + w) * N + x) * N + y);
                                                 adj_term(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CIext) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
                                                 bit_b[y] = 0;
                                             }
@@ -328,38 +333,53 @@ int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, 
 }
 
 // ---- the whole E2 matrix ------------------------------------------------------------------------------------------
-int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R, bool want_ci_and_grid){
+namespace{
+// Runs body(i_th, n_th) on every OpenMP thread (the contraction routines split their outer string loop that way; their writes are atomic).
+template <class F> void on_threads(F body){
+#pragma omp parallel
+    body(omp_get_thread_num(), omp_get_num_threads());
+}
+}
+
+int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R, bool want_ci_and_grid, bool with_3body){
     const int nA = RF.n_a, Nf = RF.N_fit, ns = RF.n_s;
     const size_t n2 = (size_t)nA * nA, n4 = n2 * n2, n6 = n4 * n2;
     const size_t nd = (size_t)RF.ci->Na * RF.ci->Nb;
     const int np1 = 2 * n_fit_pol + 1;
     ResFitSeeds & S = R->tables;
     S.PS.assign(Nf, 0.0); S.PH.assign(n2 * Nf, 0.0); S.PV_JK.assign(n4 * Nf, 0.0); S.PV_AB.assign(n4 * Nf, 0.0);
-    S.P3_JK.assign(n6 * Nf, 0.0); S.P3_AB.assign(n6 * Nf, 0.0);
+    if(with_3body){ S.P3_JK.assign(n6 * Nf, 0.0); S.P3_AB.assign(n6 * Nf, 0.0); }
+    else{ S.P3_JK.clear(); S.P3_AB.clear(); }
     aldet_data * ci = RF.ci;
     // the beta variants run on coef_bas (b-major) with transposed fit arrays: separate accumulators, folded below
     std::vector<double> cib, cib_t, Cb, Cb_t;
     if(want_ci_and_grid){
         cib.assign(nd * ns, 0.0); cib_t.assign(nd * ns, 0.0); Cb.assign(nd * ns * np1, 0.0); Cb_t.assign(nd * ns * np1, 0.0);
     }
-    auto out = [&](double * Rbar, const std::vector<double> & Rfwd, bool tr){
-        ResFitAdjOut o; o.Rbar = Rbar;
-        if(want_ci_and_grid){ o.Rfwd = Rfwd.data(); o.cibar = tr ? cib_t.data() : cib.data(); o.Cbar = tr ? Cb_t.data() : Cb.data(); }
+    // the forward tables are read in place (they are needed for the CI and weight seeds only)
+    auto out = [&](double * Rbar, const double * Rfwd, bool tr){
+        ResFitAdjOut o; o.Rbar = Rbar; o.Nf = Nf; o.f0 = 0; o.nb = Nf;
+        if(want_ci_and_grid){ o.Rfwd = Rfwd; o.cibar = tr ? cib_t.data() : cib.data(); o.Cbar = tr ? Cb_t.data() : Cb.data(); }
         return o;
     };
-    auto fwd = [&](const double * p, size_t n){ return std::vector<double>(p, p + n); };
-    const std::vector<double> fPS = fwd(RF.RF_PS, Nf), fPH = fwd(RF.RF_PH, n2 * Nf), fJK = fwd(RF.RF_PV_JK, n4 * Nf), fAB = fwd(RF.RF_PV_AB, n4 * Nf),
-                              f3J = fwd(RF.RF_P3_JK, n6 * Nf), f3A = fwd(RF.RF_P3_AB, n6 * Nf);
-    res_fit_adj_0body(W, ns, ns, ci->coef[0], ci->Na, ci->Nb, out(S.PS.data(), fPS, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_1body(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, out(S.PH.data(), fPH, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_1body(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, out(S.PH.data(), fPH, true), RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, 0, 1);
-    res_fit_adj_2body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, out(S.PV_AB.data(), fAB, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_2body_AA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, out(S.PV_JK.data(), fJK, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_2body_AA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, out(S.PV_JK.data(), fJK, true), RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, 0, 1);
-    res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, out(S.P3_JK.data(), f3J, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, out(S.P3_JK.data(), f3J, true), RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, 0, 1);
-    res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, out(S.P3_AB.data(), f3A, false), RF.L_fit, RF.S_fit, RF.C_fit, Nf, 0, 1);
-    res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a, out(S.P3_AB.data(), f3A, true), RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, 0, 1);
+    double * P3J = with_3body ? S.P3_JK.data() : nullptr, * P3A = with_3body ? S.P3_AB.data() : nullptr;
+    const ResFitAdjOut o0 = out(S.PS.data(), RF.RF_PS, false), o1 = out(S.PH.data(), RF.RF_PH, false), o1t = out(S.PH.data(), RF.RF_PH, true),
+                       o2a = out(S.PV_AB.data(), RF.RF_PV_AB, false), o2j = out(S.PV_JK.data(), RF.RF_PV_JK, false), o2jt = out(S.PV_JK.data(), RF.RF_PV_JK, true),
+                       o3j = out(P3J, RF.RF_P3_JK, false), o3jt = out(P3J, RF.RF_P3_JK, true), o3a = out(P3A, RF.RF_P3_AB, false), o3at = out(P3A, RF.RF_P3_AB, true);
+    on_threads([&](int it, int nt){
+        res_fit_adj_0body(W, ns, ns, ci->coef[0], ci->Na, ci->Nb, o0, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_1body(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, o1, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_1body(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, o1t, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+        res_fit_adj_2body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, o2a, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_2body_AA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, o2j, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_2body_AA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, o2jt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+        if(with_3body || want_ci_and_grid){
+            res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, o3j, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+            res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, o3jt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+            res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, o3a, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+            res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a, o3at, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+        }
+    });
     if(!want_ci_and_grid) return 0;
 
     // fold the beta variants: coef_bas[b*Na + a, s] = coef[a*Nb + b, s]
@@ -381,6 +401,22 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
     }
     RFGridBranch br = rf_grid_branch(RF.E0, ns, ci->E_act[0], (long)nd);
     rf_grid_vjp(br, Nf, gbar.data(), R->e0bar.data(), R->Eactbar.data());
+    return 0;
+}
+
+int res_fit_E2_adjoint_3body(res_fit_data & RF, const double * W, int f0, int nb, double * P3J, double * P3A){
+    const int nA = RF.n_a, Nf = RF.N_fit, ns = RF.n_s;
+    const size_t n6 = (size_t)nA * nA * nA * nA * nA * nA;
+    std::fill(P3J, P3J + n6 * nb, 0.0); std::fill(P3A, P3A + n6 * nb, 0.0);
+    aldet_data * ci = RF.ci;
+    auto out = [&](double * Rbar){ ResFitAdjOut o; o.Rbar = Rbar; o.Nf = Nf; o.f0 = f0; o.nb = nb; return o; };
+    const ResFitAdjOut oj = out(P3J), oa = out(P3A);
+    on_threads([&](int it, int nt){
+        res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, oj, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, oj, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+        res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, oa, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+        res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a, oa, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+    });
     return 0;
 }
 

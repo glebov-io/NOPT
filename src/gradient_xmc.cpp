@@ -155,7 +155,7 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
     lap("2. E2i = C^T E2PP C:  E2PPbar = C Eb C^T,  Cbar");
     // ---- 3. the res_fit contraction ----------------------------------------------------------------------------------------------------------------
     ResFitAdjResult RR;
-    res_fit_E2_adjoint(RF, W.data(), &RR, true);
+    res_fit_E2_adjoint(RF, W.data(), &RR, true, false);   // the three-body table seeds follow window by window in step 4
     std::vector<double> e0bar = RR.e0bar, Eactbar = RR.Eactbar;
     std::vector<double> cbar2((size_t)ns * Nd);                      // state-major
     for(size_t d = 0; d < Nd; d++) for(int s = 0; s < ns; s++) cbar2[(size_t)s * Nd + d] = RR.cibar[d * ns + s];
@@ -173,6 +173,14 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
     A.H_AV = adjHAV.data(); A.H_CA = adjHCA.data(); A.H_CV = adjHCV.data();
     std::vector<double> gbar_grid(Nf, 0.0);
     std::vector<double> PH(a2), PVJ(a4), PVA(a4), P3J(a6), P3A(a6);
+    // the seeds of the two three-body tables (n_a^6 x N_fit each) are built for a window of grid points at a time: NOPT_XMC_ADJ_MB bounds the
+    // window (default 4096 MB for the pair); every window repeats the three-body contraction loops
+    double adj_mb = 4096.0;
+    if(getenv("NOPT_XMC_ADJ_MB") && *getenv("NOPT_XMC_ADJ_MB")) adj_mb = std::max(1.0, atof(getenv("NOPT_XMC_ADJ_MB")));
+    const int win = (int)std::max(1.0, std::min((double)Nf, adj_mb * 1048576.0 / (2.0 * 8.0 * (double)a6)));
+    std::vector<double> w3J, w3A;
+    int wf0 = -1, wnb = 0, n_windows = 0;
+    double t_win = 0.0;
     int n_visited = 0;
     const char * blk_names[8] = {"CCVV", "CAVV", "AAVV", "CCAV", "CCAA", "CV", "AV", "CA"};
     double blk_time[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -190,10 +198,18 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
         double mx = std::fabs(RR.tables.PS[f]);
         for(size_t i = 0; i < a2; i++){ PH[i] = RR.tables.PH[i * Nf + f]; mx = std::max(mx, std::fabs(PH[i])); }
         for(size_t i = 0; i < a4; i++){ PVJ[i] = RR.tables.PV_JK[i * Nf + f]; PVA[i] = RR.tables.PV_AB[i * Nf + f]; mx = std::max(mx, std::max(std::fabs(PVJ[i]), std::fabs(PVA[i]))); }
-        for(size_t i = 0; i < a6; i++){ P3J[i] = RR.tables.P3_JK[i * Nf + f]; mx = std::max(mx, std::fabs(P3J[i])); }
+        if(wf0 < 0 || f >= wf0 + wnb){
+            const double t0 = omp_get_wtime();
+            wf0 = f; wnb = std::min(win, Nf - f);
+            w3J.assign(a6 * wnb, 0.0); w3A.assign(a6 * wnb, 0.0);
+            res_fit_E2_adjoint_3body(RF, W.data(), wf0, wnb, w3J.data(), w3A.data());
+            n_windows++; t_win += omp_get_wtime() - t0;
+        }
+        const int fw = f - wf0;
+        for(size_t i = 0; i < a6; i++){ P3J[i] = w3J[i * wnb + fw]; mx = std::max(mx, std::fabs(P3J[i])); }
         // RF_P3_AB: res_fit keeps [t,u,v,w,x,y], the raw EE kernels [t,u,x,v,w,y]
         for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int vv = 0; vv < na; vv++) for(int w = 0; w < na; w++) for(int x = 0; x < na; x++) for(int y = 0; y < na; y++){
-            const double val = RR.tables.P3_AB[(((((size_t)(t * na + u) * na + vv) * na + w) * na + x) * na + y) * Nf + f];
+            const double val = w3A[(((((size_t)(t * na + u) * na + vv) * na + w) * na + x) * na + y) * wnb + fw];
             P3A[((((size_t)(t * na + u) * na + x) * na + vv) * na + w) * na + y] = val; mx = std::max(mx, std::fabs(val));
         }
         if(getenv("NOPT_RESP_DEBUG") && *getenv("NOPT_RESP_DEBUG")){
@@ -237,6 +253,9 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
         if(bad) return fail("a PT block adjoint failed");
         for(int k = 0; k < K; k++) gbar_grid[gf[k]] += shadj[k];
     }
+    fprintf(out_stream, "XMCQDPT2 gradient: three-body table seeds in %d window(s) of up to %d grid points (%.0f MB), %.2f s\n", n_windows, win,
+            2.0 * 8.0 * (double)a6 * win / 1048576.0, t_win);
+    w3J.clear(); w3J.shrink_to_fit(); w3A.clear(); w3A.shrink_to_fit();
     fprintf(out_stream, "XMCQDPT2 gradient: block adjoints at %d of %d grid points; time per class:", n_visited, Nf);
     for(int k = 0; k < 8; k++) fprintf(out_stream, " %s %.2f s", blk_names[k], blk_time[k]);
     fprintf(out_stream, "\n");
