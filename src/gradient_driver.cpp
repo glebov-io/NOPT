@@ -15,6 +15,7 @@
 #include "gradient_rhf.h"
 #include "gradient_casscf.h"
 #include "casscf_resp.h"
+#include "gradient_xmc.h"
 #include "dsrg_grad.h"
 
 double grad_rss_mb(){
@@ -35,7 +36,8 @@ const char * analytic_gradient_method(const inp_par * P){
     if(P->rhf.y && !P->cas.y && !P->xmc.y && !P->cdas.y && !others) return "rhf";
     const bool aldet = P->cas.y && P->cas.ci_solver == CISOLVER_ALDET;
     if(aldet && !P->xmc.y && !P->cdas.y && !others) return "cas_scf";
-    fprintf(out_stream, "ERROR: no analytic gradient for this combination of methods (supported: RHF; SA-CASSCF and DSRG-PT2 with the "
+    if(aldet && P->xmc.y && !P->cdas.y && !others) return "xmcqdpt2";
+    fprintf(out_stream, "ERROR: no analytic gradient for this combination of methods (supported: RHF; SA-CASSCF, XMCQDPT2 and DSRG-PT2 with the "
                         "determinant CI); not substituting a numerical one\n");
     return nullptr;
 }
@@ -46,8 +48,10 @@ int analytic_gradient(inp_par * P, molecule * M, int root, double * g, double * 
     if(method_out) *method_out = method;
     const bool rhf = !strcmp(method, "rhf");
     const bool cas = !strcmp(method, "cas_scf");
+    const bool xmc = !strcmp(method, "xmcqdpt2");
     const bool dsrg = !strcmp(method, "dsrg_pt2");
-    // DSRG-PT2 computes its gradient inside the energy run, on request; reset the requests (a previous geometry may have left results behind)
+    // the PT methods compute their gradient inside the energy run, on request; reset the requests (a previous geometry may have left results behind)
+    g_xmc_grad.root  = xmc  ? std::max(root, 0) : -1; g_xmc_grad.status = 0;  g_xmc_grad.done = false;
     g_dsrg_grad.want = dsrg; g_dsrg_grad.status = 0; g_dsrg_grad.done = false;
     if(dsrg && root >= 0 && !P->dsrg.sa && root != P->dsrg.root){
         fprintf(out_stream, "ERROR: the DSRG-PT2 target root is set in the input ($DSRG root=%d); -root %d differs\n", P->dsrg.root, root); return 3; }
@@ -68,6 +72,11 @@ int analytic_gradient(inp_par * P, molecule * M, int root, double * g, double * 
     else if(cas){
         if(root >= 0){ if(casscf_root_gradient(M, root, gr.data(), &e)) rc = 3; }
         else if(casscf_sa_gradient(M, gr.data(), &e)) rc = 3;
+    }
+    else if(xmc){
+        if(!g_xmc_grad.done){ fprintf(out_stream, "ERROR: the XMCQDPT2 gradient was not computed (see the messages above)\n"); rc = 3; }
+        else if(xmc_grad_contract(M)) rc = 3;
+        else { gr = g_xmc_grad.g; e = g_xmc_grad.E_root; }
     }
     else if(dsrg){
         if(!g_dsrg_grad.done){ fprintf(out_stream, "ERROR: the DSRG-PT2 gradient was not computed (see the messages above)\n"); rc = 3; }
