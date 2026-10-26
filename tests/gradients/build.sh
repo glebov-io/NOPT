@@ -18,7 +18,7 @@ ARCH=${ARCH:-x86-64-v4}
 GTO_MAX=${GTO_MAX:-27}
 DMRG=${DMRG:-true}
 JOBS=${JOBS:-auto}
-TARGETS=${TARGETS:-run_sQM}
+TARGETS=${TARGETS:-run_sQM run_ritest}
 # Only keys the dependency layers; the NOPT that stage compiles is never used.
 BASE_REF=fc25396f446d8211407ed9ca0832bb476287bf61
 IMG=nopt-grad-builder:${ARCH}-dmrg${DMRG}

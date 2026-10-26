@@ -1,4 +1,4 @@
-# Regression tests
+# Regression and analytic-gradient tests
 
 Docker only; no host toolchain is needed.
 
@@ -35,3 +35,9 @@ output changes. Records: `rhf`, `cis`, `cas_scf`, `xmc_cas`, `xmcqdpt2`, `dsrg_p
 Cases (`cases.json`): `c4h6_xmc`, `cis`, `dsrg4ene_aldet` (all from `examples/`) and `h2o_rhf`
 (`fixtures/h2o`, RHF). The golden files come from GCC 13, x86-64-v4, OpenBLAS
 0.3.26 (OpenMP); another CPU or BLAS can differ in the last digits, hence the 1e-9 Eh tolerance.
+
+## Component checks
+
+| script / program | checks |
+|---|---|
+| `PROG=run_ritest run.sh <dir> <any.inp>` | density-fitting adjoints on random data: L-only, V-only and both, a negative control, the J/K seeds, the adjoint of V^-1/2 |
