@@ -13,6 +13,8 @@
 #include "QM_calc.h"
 #include "integral_derivatives.h"
 #include "gradient_rhf.h"
+#include "gradient_casscf.h"
+#include "casscf_resp.h"
 
 double grad_rss_mb(){
     FILE * f = fopen("/proc/self/statm", "r"); if(!f) return 0;
@@ -29,7 +31,9 @@ double grad_peak_rss_mb(){
 const char * analytic_gradient_method(const inp_par * P){
     const bool others = P->dsrg.y || P->mp2.y || P->cis.y || P->avas.y;
     if(P->rhf.y && !P->cas.y && !P->xmc.y && !P->cdas.y && !others) return "rhf";
-    fprintf(out_stream, "ERROR: no analytic gradient for this combination of methods (supported: RHF); not substituting a numerical one\n");
+    const bool aldet = P->cas.y && P->cas.ci_solver == CISOLVER_ALDET;
+    if(aldet && !P->xmc.y && !P->cdas.y && !others) return "cas_scf";
+    fprintf(out_stream, "ERROR: no analytic gradient for this combination of methods (supported: RHF; SA-CASSCF with the determinant CI); not substituting a numerical one\n");
     return nullptr;
 }
 
@@ -38,6 +42,7 @@ int analytic_gradient(inp_par * P, molecule * M, int root, double * g, double * 
     if(!method) return 3;
     if(method_out) *method_out = method;
     const bool rhf = !strcmp(method, "rhf");
+    const bool cas = !strcmp(method, "cas_scf");
     grab_E = 1;
     const double t0 = omp_get_wtime();
     single_point_calc(P, M);
@@ -51,6 +56,10 @@ int analytic_gradient(inp_par * P, molecule * M, int root, double * g, double * 
     if(rhf){
         if(rhf_gradient(M, gr.data())) rc = 3;
         else e = E_grabbed.empty() ? 0.0 : E_grabbed[0];
+    }
+    else if(cas){
+        if(root >= 0){ if(casscf_root_gradient(M, root, gr.data(), &e)) rc = 3; }
+        else if(casscf_sa_gradient(M, gr.data(), &e)) rc = 3;
     }
     nopt_deriv_engines_finalize();
     if(rc) return rc;

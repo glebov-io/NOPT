@@ -3,7 +3,7 @@
 
 // One entry point for the analytic nuclear gradient: runs the energy calculation the input selects at the CURRENT geometry of M and
 // differentiates the energy of that method. Callable repeatedly in one process (geometry optimization): every request is reset before the energy run.
-//   RHF (exact, RI).
+//   RHF (exact, RI);  SA-CASSCF (RI, determinant CI): the SA energy (root < 0) or the energy of root `root`.
 // Anything else is refused (no numerical substitute). On success: g (3 n_atoms, Eh/bohr, dE/dR in the coordinates of M->atom_coord, bohr),
 // *E the energy that was differentiated, *method a short name; returns 0. The gradient is refused when it violates translational or
 // rotational invariance beyond 1e-5 (every supported path is C1 without external fields).
