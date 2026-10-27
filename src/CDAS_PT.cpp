@@ -209,6 +209,8 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
             memcpy(ACT_MO, TMP_MO, sizeof(double)*M->n_act_orb[0]*M->n_ao);
             delete[] TMP_MO;
             copy_MO_to_CVEC(M->MO_VEC,n_cor,n_act, n_virt,n_ao,COR_VEC,ACT_VEC,VIRT_VEC);
+            //ACT_CVEC must follow MO_VEC: the properties contract the PT-stage RDMs with it
+            CAS->update_ACT_CVEC();
 
             loc_realized = 1;
             fprintf(out_stream,"active-space localization converged; running localized\n");
@@ -391,6 +393,7 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         if(ACT_MO_save != nullptr){
             memcpy(M->MO_VEC+M->n_cor_orb*M->n_ao, ACT_MO_save, sizeof(double)*M->n_act_orb[0]*M->n_ao);
             delete[] ACT_MO_save;
+            CAS->update_ACT_CVEC();
         }
 
     };
