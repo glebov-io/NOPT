@@ -449,10 +449,12 @@ int res_fit_adj_selftest(res_fit_data & RF){
     int fails = 0;
     auto dotv = [](const std::vector<double> & a, const double * b){ double s = 0; for(size_t i = 0; i < a.size(); i++) s += a[i] * b[i]; return s; };
 
-    // (1) tables: <W, E2(tables)> = <Rbar(W), tables>
+    // (1) tables: <W, E2(tables)> = <Rbar(W), tables>; the error relative to the sum of |table parts| (the parts can cancel)
     const double lhs = E2_dot(RF, W.data());
-    const double rhs = dotv(S.PS, RF.RF_PS) + dotv(S.PH, RF.RF_PH) + dotv(S.PV_JK, RF.RF_PV_JK) + dotv(S.PV_AB, RF.RF_PV_AB) + dotv(S.P3_JK, RF.RF_P3_JK) + dotv(S.P3_AB, RF.RF_P3_AB);
-    double err = std::fabs(lhs - rhs) / (1e-12 + std::fabs(lhs));
+    const double rk[6] = {dotv(S.PS, RF.RF_PS), dotv(S.PH, RF.RF_PH), dotv(S.PV_JK, RF.RF_PV_JK), dotv(S.PV_AB, RF.RF_PV_AB), dotv(S.P3_JK, RF.RF_P3_JK), dotv(S.P3_AB, RF.RF_P3_AB)};
+    double rhs = 0, scale = std::fabs(lhs);
+    for(int k = 0; k < 6; k++){ rhs += rk[k]; scale += std::fabs(rk[k]); }
+    double err = std::fabs(lhs - rhs) / (1e-12 + scale);
     fprintf(out_stream, "\nXMC contraction adjoint, tables:  <W, E2(tables)> = % .12e   <Rbar(W), tables> = % .12e   rel.err %.1e %s\n", lhs, rhs, err, err < 1e-11 ? "ok" : "MISMATCH");
     if(err >= 1e-11) fails++;
     const char * names[6] = {"PS", "PH", "PV_JK", "PV_AB", "P3_JK", "P3_AB"};
@@ -487,7 +489,9 @@ int res_fit_adj_selftest(res_fit_data & RF){
         fprintf(out_stream, "XMC contraction adjoint, CI vectors: analytic % .12e  FD % .12e  rel.err %.1e %s\n", ana, fd, err, err < 1e-8 ? "ok" : "MISMATCH");
         if(err >= 1e-8) fails++;
     }
-    // (3) E0 and E_act: central differences of <W, E2> with the fits (stencils, weights, grid) regenerated from the perturbed values; the tables are the same numbers
+    // (3) E0 and E_act: central differences of <W, E2> with the fits (stencils, weights, grid) regenerated from the perturbed values; the tables are the same numbers.
+    // The interpolation is smooth only while every evaluation point keeps its stencil and the grid its end points: the step shrinks until no
+    // stencil (S, L) and no grid branch changes over the four displaced points.
     {
         aldet_data * ci = RF.ci;
         const size_t nd = (size_t)ci->Na * ci->Nb;
@@ -495,21 +499,39 @@ int res_fit_adj_selftest(res_fit_data & RF){
         for(double & v : dE0) v = rnd();
         for(double & v : dEa) v = rnd();
         double ana = 0; for(int i = 0; i < ns; i++) ana += R.e0bar[i] * dE0[i]; for(size_t i = 0; i < nd; i++) ana += R.Eactbar[i] * dEa[i];
-        const double h = 1e-5;
         std::vector<double> tabsave[6];
         for(int k = 0; k < 6; k++) tabsave[k].assign(tabs[k], tabs[k] + sizes[k]);
-        auto at = [&](double k){
+        const std::vector<int> S0(RF.S_fit, RF.S_fit + nd * ns), L0(RF.L_fit, RF.L_fit + nd * ns);
+        const RFGridBranch b0 = rf_grid_branch(RF.E0, ns, ci->E_act[0], (long)nd);
+        long switches = 0;
+        auto at = [&](double k, double h){
             for(int i = 0; i < ns; i++) RF.E0[i] = E0s[i] + k * h * dE0[i];
             for(size_t i = 0; i < nd; i++) ci->E_act[0][i] = Eas[i] + k * h * dEa[i];
             RF.gen_grid(Nf, n_fit_pol);                      // regenerates the grid and the fits (and reallocates the tables: refill them)
             double * tt[6] = {RF.RF_PS, RF.RF_PH, RF.RF_PV_JK, RF.RF_PV_AB, RF.RF_P3_JK, RF.RF_P3_AB};
             for(int j = 0; j < 6; j++) std::copy(tabsave[j].begin(), tabsave[j].end(), tt[j]);
+            for(size_t i = 0; i < nd * ns; i++) switches += (RF.S_fit[i] != S0[i] || RF.L_fit[i] != L0[i]);
+            const RFGridBranch b = rf_grid_branch(RF.E0, ns, ci->E_act[0], (long)nd);
+            switches += (b.a_min != b0.a_min || b.a_max != b0.a_max || b.I_min != b0.I_min || b.I_max != b0.I_max);
             return E2_dot(RF, W.data());
         };
-        const double fd = (-at(2) + 8 * at(1) - 8 * at(-1) + at(-2)) / (12 * h);
+        double h = 1e-5, fd = 0;
+        for(; ; h *= 0.1){
+            switches = 0;
+            fd = (-at(2, h) + 8 * at(1, h) - 8 * at(-1, h) + at(-2, h)) / (12 * h);
+            if(switches == 0 || h < 1e-8) break;
+            fprintf(out_stream, "   E0 and E_act, step %.0e: %ld stencil or grid switches over the displaced points, smaller step\n", h, switches);
+        }
+        // back to the unperturbed fits and tables
+        std::copy(E0s.begin(), E0s.end(), RF.E0); std::copy(Eas.begin(), Eas.end(), ci->E_act[0]);
+        RF.gen_grid(Nf, n_fit_pol);
+        { double * tt[6] = {RF.RF_PS, RF.RF_PH, RF.RF_PV_JK, RF.RF_PV_AB, RF.RF_P3_JK, RF.RF_P3_AB};
+          for(int j = 0; j < 6; j++) std::copy(tabsave[j].begin(), tabsave[j].end(), tt[j]); }
         err = std::fabs(ana - fd) / (1e-12 + std::fabs(ana));
-        fprintf(out_stream, "XMC contraction adjoint, E0 and E_act (weights and grid regenerated): analytic % .12e  FD % .12e  rel.err %.1e %s\n", ana, fd, err, err < 1e-6 ? "ok" : "MISMATCH");
-        if(err >= 1e-6) fails++;
+        const bool ok = err < 1e-6 && switches == 0;
+        fprintf(out_stream, "XMC contraction adjoint, E0 and E_act (weights and grid regenerated, step %.0e%s): analytic % .12e  FD % .12e  rel.err %.1e %s\n",
+                h, switches ? ", stencils still switch" : "", ana, fd, err, ok ? "ok" : "MISMATCH");
+        if(!ok) fails++;
     }
     return fails;
 }

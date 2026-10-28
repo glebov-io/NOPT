@@ -39,7 +39,10 @@ int xmc_vjp_selftest(PT_tensors & T, res_fit_data & RF, const char * blocks, int
         for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int v = 0; v < na; v++) for(int w = 0; w < na; w++) for(int x = 0; x < na; x++) for(int y = 0; y < na; y++)
             TT.RF_P3_AB[((((t * na + u) * na + x) * na + v) * na + w) * na + y] = RF.RF_P3_AB[(((((t * na + u) * na + v) * na + w) * na + x) * na + y) * Nf + f];
     };
-    const int fails = pt_vjp_selftest(T, blocks);
+    // ALL of the standalone test seeds the final (permuted, summed) arrays of E2_calc_EE, which the tables of res_fit_data are not: here it means
+    // every block, one by one
+    const std::string list = std::string(blocks) == "ALL" ? "CCVV,CAVV,AAVV,CCAV,CCAA,CV,AV,CA" : blocks;
+    const int fails = pt_vjp_selftest(T, list.c_str());
     RF.E_fit[f] = E_fit_f;
     pt_vjp_forward_override = nullptr;
     pt_vjp_shift = 0.0;
