@@ -67,7 +67,8 @@ costs 2-4 energies whatever the number of atoms, the numerical one 6 N.
 | `c4h6_xmc_s7.inp` | 4 | 2.2 s | 8.7 s | 135 s (60) | 15 | 3.0e-5 |
 | `naph_xmc.inp` | 8 | 5.2 s | 10.1 s | 565 s (108) | 56 | 2.8e-5 |
 
-The differences are the O(h^2) error of the numerical gradient, not of the analytic one (4-point differences agree to 1e-8 or better).
+The differences are the O(h^2) error of the numerical gradient, not of the analytic one: 4-point differences agree with it to
+4e-9 (`h2o_xmc.inp`), 3.5e-8 (`c4h6_xmc_s7.inp`) and 5.6e-8 (`naph_xmc.inp`), as in the table of examples above.
 Memory: about two extra arrays of n_ao^2 x n_aux on top of the energy (C4H6 1.4 GB vs 0.5 GB, naphthalene 1.6 GB vs 0.7 GB; the timing lines
 print the peak).
 
