@@ -64,3 +64,19 @@ ordering:
 
 `run_ritest`, `run_chaintest` and `run_tapetest` need no molecule and no derivative libint (the input file is ignored); each prints PASS or FAIL and
 returns 0 or 1.
+
+## Gradient checks (`run_grad`)
+
+`gradcheck.py <input> [--root N] [--follow]` compares the analytic gradient with 4-point central
+differences of the same energy; every displaced energy is a separate process, read from the 17-digit
+energy record. The scripts below run it on the fixtures:
+
+| script | method |
+|---|---|
+| `rhf_gradient.sh` | RHF, exact and RI; invariances, thread independence |
+| `casscf_gradient.sh`, `casscf_root_gradient.sh` | SA-CASSCF energy; individual roots, zero and unequal weights |
+| `opt_check.sh` | `run_opt` converges (RHF, SA-CASSCF energy, a CAS-SCF root) |
+| `regress_all.sh` | all of the above, the energy regression and the component checks, one PASS/FAIL line per step |
+
+Converge the SCF tightly for gradient tests (`dE=1e-16 grad=1e-10` in `$RHF`, `grad=1e-10 step=1e-11
+dE=1e-15` in `$CAS`).

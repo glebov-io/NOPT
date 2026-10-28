@@ -24,7 +24,7 @@ DMRG=${DMRG:-true}
 JOBS=${JOBS:-auto}
 LIBINT_DERIV=${LIBINT_DERIV-$HOME/nopt-libint-deriv/install}
 [ -d "$LIBINT_DERIV" ] || LIBINT_DERIV=
-TARGETS=${TARGETS:-run_sQM run_derivtest run_ritest run_chaintest run_tapetest run_resptest}
+TARGETS=${TARGETS:-run_sQM run_grad run_opt run_derivtest run_ritest run_chaintest run_tapetest run_resptest}
 # Only keys the dependency layers; the NOPT that stage compiles is never used.
 BASE_REF=fc25396f446d8211407ed9ca0832bb476287bf61
 IMG=nopt-grad-builder:${ARCH}-dmrg${DMRG}
