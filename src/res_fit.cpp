@@ -1,5 +1,6 @@
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 # include <stdio.h>
 # include "blas_link.h"
 # include <omp.h>
@@ -972,172 +973,76 @@ int res_fit_data::calc_RF_2_CV(){
                         RI->VA_RI_M,RI->aux_n_ao,0.0,
                         CAVA,n_a*n_v);
 
+    // For every output row (t,u), sums over the pairs (i,a) as matrix products, the denominator D(i,a,t,u; f) = dE/(dE^2 + s) with
+    // dE = e_i + e_t - e_a - e_u + E_fit[f] folded into the left factor:
+    //   RF_X[t,u,v,w,f] += sum_ia R_X[ia,(v,w)] L_X[ia,(t,u)] D(i,a,t,u;f)
+    // with L_A = (iu|at), L_M = (ai|tu) - (iu|at), L_J = (ai|tu) and R_A = (iv|aw), R_M = (ai|wv) - (iv|aw), R_J = (ai|wv):
+    //   AB = A.A, MM = M.M, MJ = M.J, JM = J.M, JJ = J.J.
+    // The H terms: RF_MH, RF_JH[t,u,f] += sum_ia H_ia L_{M,J}[ia,(t,u)] D(i,a,t,u;f) in the same rows; RF_HM, RF_HJ (denominator e_i - e_a) as one product.
+    {
+        const int n2 = n_a*n_a, nia = n_c*n_v;
+        std::vector<double> LA((size_t)nia*n2), LM((size_t)nia*n2), LJ((size_t)nia*n2), RA((size_t)nia*n2), RM((size_t)nia*n2), RJ((size_t)nia*n2);
+        for(int i=0; i<n_c; i++) for(int a=0; a<n_v; a++){
+            const size_t r=(size_t)(i*n_v+a)*n2;
+            for(int t=0; t<n_a; t++) for(int u=0; u<n_a; u++){
+                // left factor at (t,u)
+                LA[r+t*n_a+u]=CAVA[((i*n_a+u)*n_v+a)*n_a+t];
+                LJ[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t];
+                LM[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t]-CAVA[((i*n_a+u)*n_v+a)*n_a+t];
+                // right factor at (v,w) = (t,u)
+                RA[r+t*n_a+u]=CAVA[((i*n_a+t)*n_v+a)*n_a+u];
+                RJ[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t];
+                RM[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t]-CAVA[((i*n_a+t)*n_v+a)*n_a+u];
+            }
+        }
+        const int K = 1024;   // pairs (i,a) per product
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> GA((size_t)K*N_fit), GM((size_t)K*N_fit), GJ((size_t)K*N_fit);
+#pragma omp for schedule(dynamic)
+            for(int tu=0; tu<n2; tu++){
+                const int t=tu/n_a, u=tu%n_a;
+                const size_t ro=(size_t)tu*n2*N_fit;
+                for(int k0=0; k0<nia; k0+=K){
+                    const int nk=(nia-k0<K)?nia-k0:K;
+                    for(int k=0; k<nk; k++){
+                        const int ia=k0+k, i=ia/n_v, a=ia%n_v;
+                        const double dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
+                        const double la=LA[(size_t)ia*n2+tu], lm=LM[(size_t)ia*n2+tu], lj=LJ[(size_t)ia*n2+tu];
+                        for(int i_f=0; i_f<N_fit; i_f++){
+                            const double dE=dE_orb+E_fit[i_f];
+                            const double d=dE/(dE*dE+edshift);
+                            GA[(size_t)k*N_fit+i_f]=la*d; GM[(size_t)k*N_fit+i_f]=lm*d; GJ[(size_t)k*N_fit+i_f]=lj*d;
+                        }
+                    }
+                    const double * rA=RA.data()+(size_t)k0*n2, * rM=RM.data()+(size_t)k0*n2, * rJ=RJ.data()+(size_t)k0*n2;
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rA,n2,GA.data(),N_fit,1.0,RF_AB+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rM,n2,GM.data(),N_fit,1.0,RF_MM+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rJ,n2,GM.data(),N_fit,1.0,RF_MJ+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rM,n2,GJ.data(),N_fit,1.0,RF_JM+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rJ,n2,GJ.data(),N_fit,1.0,RF_JJ+ro,N_fit);
+                    // RF_MH, RF_JH[t,u,f] += sum_ia H_ia G_{M,J}[ia,f]
+                    cblas_dgemv(CblasRowMajor,CblasTrans,nk,N_fit,1.0,GM.data(),N_fit,H_CV+k0,1,1.0,RF_MH+(size_t)tu*N_fit,1);
+                    cblas_dgemv(CblasRowMajor,CblasTrans,nk,N_fit,1.0,GJ.data(),N_fit,H_CV+k0,1,1.0,RF_JH+(size_t)tu*N_fit,1);
+                }
+            }
+        }
+        set_blas_par();
+        // RF_HM, RF_HJ[t,u,f] += sum_ia L_{M,J}[ia,(t,u)] H_ia D0(i,a;f),  D0 with dE = e_i - e_a + E_fit[f]
+        std::vector<double> HD((size_t)nia*N_fit);
+        for(int ia=0; ia<nia; ia++){
+            const int i=ia/n_v, a=ia%n_v;
+            for(int i_f=0; i_f<N_fit; i_f++){
+                const double dE=e_c[i]-e_v[a]+E_fit[i_f];
+                HD[(size_t)ia*N_fit+i_f]=H_CV[ia]*dE/(dE*dE+edshift);
+            }
+        }
+        cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nia,1.0,LM.data(),n2,HD.data(),N_fit,1.0,RF_HM,N_fit);
+        cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nia,1.0,LJ.data(),n2,HD.data(),N_fit,1.0,RF_HJ,N_fit);
+    }
+    
     double dE_orb;
-    
-    for(int i=0; i<n_c; i++)
-    for(int u=0; u<n_a; u++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<i(a)t(b)|u(a)a(b)><v(a)a(b)|i(a)w(b)>=(iu|at)(iv|aw)
-            V=CAVA[((i*n_a+u)*n_v+a)*n_a+t]*
-              CAVA[((i*n_a+v)*n_v+a)*n_a+w];
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //(<it|au>-<iu|at>)(<av|iw>-<av|wi>)
-            V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-               CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-              (VCAA[((a*n_c+i)*n_a+w)*n_a+v]-  //<av|iw>=(ai|wv)
-               CAVA[((i*n_a+v)*n_v+a)*n_a+w]); //<av|wi>=(iv|aw)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_MM[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-    
-
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //(<it|au>-<iu|at>)<av|iw>
-            V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-               CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-               VCAA[((a*n_c+i)*n_a+w)*n_a+v];  //<av|iw>=(ai|wv)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_MJ[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-    
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<it|au>(<av|iw>-<av|wi>)
-            V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-              (VCAA[((a*n_c+i)*n_a+w)*n_a+v]-  //<av|iw>=(ai|wv)
-               CAVA[((i*n_a+v)*n_v+a)*n_a+w]); //<av|wi>=(iv|aw)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_JM[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<it|au><av|iw>
-            V=VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-              VCAA[((a*n_c+i)*n_a+w)*n_a+v];  //<av|iw>=(ai|wv)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_JJ[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-//     printf_timer("opt table");
-    
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-           CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_MH[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-           CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]-e_v[a];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_HM[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_JH[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]-e_v[a];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_HJ[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    
     for(int i=0; i<n_c; i++)
     for(int a=0; a<n_v; a++){
         //H[i,a]*H[i,a]
@@ -1272,9 +1177,47 @@ int res_fit_data::calc_RF_2_AV(){
     set_zero_matr(RF_P3_JH, n_a*n_a*n_a*n_a*N_fit);
     
     
+    // The four six-index tables, for every (t,u,v) a matrix product over the virtual index a:
+    //   RF_X[t,u,v | y,x,w | f] += sum_a B_X[(y,x,w), a] G_X[a, f],   G_X[a,f] = A_X(a,t,u,v) ED(a,t,u,v; f)
+    // with the antisymmetrized (M) or plain (J) integrals on either side: JK = M.M, JJ = J.J, MJ = M.J, JM = J.M (first factor: t,u,v).
+    {
+        const size_t n3 = (size_t)n_a*n_a*n_a;
+        std::vector<double> BM(n3*n_v), BJ(n3*n_v);   // [(y,x,w), a]
+        for(int y=0; y<n_a; y++) for(int x=0; x<n_a; x++) for(int w=0; w<n_a; w++) for(int a=0; a<n_v; a++){
+            const size_t r = ((size_t)(y*n_a+x)*n_a+w)*n_v+a;
+            BJ[r] = VAAA[((a*n_a+x)*n_a+w)*n_a+y];
+            BM[r] = VAAA[((a*n_a+x)*n_a+w)*n_a+y]-VAAA[((a*n_a+y)*n_a+w)*n_a+x];
+        }
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> GM((size_t)n_v*N_fit), GJ((size_t)n_v*N_fit);
+#pragma omp for schedule(dynamic)
+            for(long tuv=0; tuv<(long)n3; tuv++){
+                const int t=tuv/(n_a*n_a), u=(tuv/n_a)%n_a, v=tuv%n_a;
+                for(int a=0; a<n_v; a++){
+                    const double dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
+                    const double Am=VAAA[((a*n_a+t)*n_a+v)*n_a+u]-VAAA[((a*n_a+u)*n_a+v)*n_a+t];
+                    const double Aj=VAAA[((a*n_a+u)*n_a+v)*n_a+t];
+                    for(int i_f=0; i_f<N_fit; i_f++){
+                        const double dE=dE_orb+E_fit[i_f];
+                        const double ed=dE/(dE*dE+edshift);
+                        GM[(size_t)a*N_fit+i_f]=Am*ed;
+                        GJ[(size_t)a*N_fit+i_f]=Aj*ed;
+                    }
+                }
+                const size_t off=(size_t)tuv*n3*N_fit;
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,N_fit,n_v,1.0,BM.data(),n_v,GM.data(),N_fit,1.0,RF_P3_JK+off,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,N_fit,n_v,1.0,BJ.data(),n_v,GJ.data(),N_fit,1.0,RF_P3_JJ+off,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,N_fit,n_v,1.0,BJ.data(),n_v,GM.data(),N_fit,1.0,RF_P3_MJ+off,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,N_fit,n_v,1.0,BM.data(),n_v,GJ.data(),N_fit,1.0,RF_P3_JM+off,N_fit);
+            }
+        }
+        set_blas_par();
+    }
+
 #pragma omp parallel
     {
-    //MM == JK
         double dE_orb;
         double V;
         double dE;
@@ -1287,94 +1230,6 @@ int res_fit_data::calc_RF_2_AV(){
         int u,v;
         int th_id = omp_get_thread_num();
         
-        for(int vu=th_id; vu<n_a*n_a; vu+=num_threads){
-            v=vu/n_a;
-            u=vu%n_a;
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<aw|xy>-<aw|yx>=(yw|xa)-(xw|ya)
-                    V =(VAAA[((a*n_a+t)*n_a+v)*n_a+u]-
-                        VAAA[((a*n_a+u)*n_a+v)*n_a+t])*
-                       (VAAA[((a*n_a+x)*n_a+w)*n_a+y]-
-                        VAAA[((a*n_a+y)*n_a+w)*n_a+x]);
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JK[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-        
-            //JJ
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<a(a)w(b)|x(a)y(b)>=(yw|xa)
-                    V=VAAA[((a*n_a+u)*n_a+v)*n_a+t]*
-                      VAAA[((a*n_a+x)*n_a+w)*n_a+y];
-                    
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-            //MJ
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<a(a)w(b)|x(a)y(b)>=(yw|xa)
-                    V=(VAAA[((a*n_a+t)*n_a+v)*n_a+u]-
-                       VAAA[((a*n_a+u)*n_a+v)*n_a+t])*
-                       VAAA[((a*n_a+x)*n_a+w)*n_a+y];
-            
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_MJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-            //JM
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<aw|xy>-<aw|yx>=(yw|xa)-(xw|ya)
-            V= VAAA[((a*n_a+u)*n_a+v)*n_a+t]*
-              (VAAA[((a*n_a+x)*n_a+w)*n_a+y]-
-               VAAA[((a*n_a+y)*n_a+w)*n_a+x]);
-            
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JM[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-        }
-    
         //H
         for(int a=0; a<n_v; a++)
         for(int t=th_id; t<n_a; t+=num_threads){
@@ -1505,6 +1360,7 @@ int res_fit_data::calc_RF_2_AV(){
         
     }
     //RF_PV_JK
+#pragma omp parallel for collapse(2)
     for(int w=0; w<n_a; w++)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
@@ -1515,6 +1371,7 @@ int res_fit_data::calc_RF_2_AV(){
                                                        -RF_P3_MH[(((t*n_a+w)*n_a+v)*n_a+u)*N_fit+i_f]
                                                        +RF_P3_MH[(((t*n_a+w)*n_a+u)*n_a+v)*N_fit+i_f];
     //RF_PV_AB
+#pragma omp parallel for collapse(2)
     for(int w=0; w<n_a; w++)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
@@ -1530,6 +1387,7 @@ int res_fit_data::calc_RF_2_AV(){
                                                             +RF_P3_JJ[(((((u*n_a+t)*n_a+x)*n_a+w)*n_a+v)*n_a+x)*N_fit+i_f];
     }
     //RF_P3_AB
+#pragma omp parallel for collapse(2)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
     for(int t=0; t<n_a; t++)
@@ -1620,54 +1478,35 @@ int res_fit_data::calc_RF_2_CA(){
     
     
     
-    //VV
-    for(int v=0; v<n_a; v++)
-    for(int u=0; u<n_a; u++)
-    for(int i=0; i<n_c; i++)
-    for(int t=0; t<n_a; t++){
-        dE_orb= e_c[i]+e_a[t]-e_a[u]-e_a[v];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
+    // VV and VH, for every (t,u,v) a product over the core index i (denominator D(i,t,u,v; f), dE = e_i + e_t - e_u - e_v + E_fit[f]):
+    //   RF_P3_VV[t,u,v,(y,x,w),f] += sum_i (iw|xy) (iv|ut) D,   RF_P3_VH[t,u,v,w,f] += sum_i H_CA[i,w] (iv|ut) D
+    {
+        const size_t n3 = (size_t)n_a*n_a*n_a;
+        std::vector<double> B(n3*n_c);   // [(y,x,w), i] = (iw|xy)
+        for(int y=0; y<n_a; y++) for(int x=0; x<n_a; x++) for(int w=0; w<n_a; w++) for(int i=0; i<n_c; i++)
+            B[((size_t)(y*n_a+x)*n_a+w)*n_c+i]=CAAA[((i*n_a+w)*n_a+x)*n_a+y];
+        std::vector<double> HT((size_t)n_a*n_c);   // [w, i] = H_CA[i,w]
+        for(int i=0; i<n_c; i++) for(int w=0; w<n_a; w++) HT[(size_t)w*n_c+i]=H_CA[i*n_a+w];
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> G((size_t)n_c*N_fit);
+#pragma omp for schedule(dynamic)
+            for(long tuv=0; tuv<(long)n3; tuv++){
+                const int t=tuv/(n_a*n_a), u=(tuv/n_a)%n_a, v=tuv%n_a;
+                for(int i=0; i<n_c; i++){
+                    const double dE_o=e_c[i]+e_a[t]-e_a[u]-e_a[v];
+                    const double c=CAAA[((i*n_a+v)*n_a+u)*n_a+t];
+                    for(int i_f=0; i_f<N_fit; i_f++){
+                        const double dE=dE_o+E_fit[i_f];
+                        G[(size_t)i*N_fit+i_f]=c*dE/(dE*dE+edshift);
+                    }
+                }
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,N_fit,n_c,1.0,B.data(),n_c,G.data(),N_fit,1.0,RF_P3_VV+(size_t)tuv*n3*N_fit,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n_a,N_fit,n_c,1.0,HT.data(),n_c,G.data(),N_fit,1.0,RF_P3_VH+(size_t)tuv*n_a*N_fit,N_fit);
+            }
         }
-        for(int y=0; y<n_a; y++)
-        for(int x=0; x<n_a; x++)
-        for(int w=0; w<n_a; w++){
-            
-// #ifndef _RI 
-//             V=AAAC[((t*n_a+u)*n_a+v)*n_c+i]*
-//               AAAC[((y*n_a+x)*n_a+w)*n_c+i];
-// #endif      
-            V=(CAAA[((i*n_a+v)*n_a+u)*n_a+t]*
-               CAAA[((i*n_a+w)*n_a+x)*n_a+y]);
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_VV[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
-    }
-    //VH
-    for(int v=0; v<n_a; v++)
-    for(int u=0; u<n_a; u++)
-    for(int i=0; i<n_c; i++)
-    for(int t=0; t<n_a; t++){
-        dE_orb= e_c[i]+e_a[t]-e_a[u]-e_a[v];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int w=0; w<n_a; w++){
-            H2a=H_CA[i*n_a+w];
-// #ifndef _RI 
-//             V=AAAC[((t*n_a+u)*n_a+v)*n_c+i]*
-//               H2a;
-// #endif      
-            V=(CAAA[((i*n_a+v)*n_a+u)*n_a+t]*
-               H2a);
-
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_VH[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
+        set_blas_par();
     }
 
     //HV
@@ -1719,6 +1558,7 @@ int res_fit_data::calc_RF_2_CA(){
     
 //     set_zero_matr(RF_P3_JK, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
     
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
@@ -1732,6 +1572,7 @@ int res_fit_data::calc_RF_2_CA(){
                                                                        +RF_P3_VV[(((((u*n_a+v)*n_a+y)*n_a+x)*n_a+w)*n_a+t)*N_fit+i_f];
     
 //     set_zero_matr(RF_PV_JK, n_a*n_a*n_a*n_a*N_fit);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
@@ -1754,6 +1595,7 @@ int res_fit_data::calc_RF_2_CA(){
                                                        -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+t)*n_a+x)*N_fit+i_f]
                                                        -RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+u)*n_a+x)*N_fit+i_f]
                                                        +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f];
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
@@ -1770,6 +1612,7 @@ int res_fit_data::calc_RF_2_CA(){
 
     
 //     set_zero_matr(RF_P3_AB, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
@@ -1791,6 +1634,7 @@ int res_fit_data::calc_RF_2_CA(){
                                                                        -RF_P3_VV[(((((x*n_a+y)*n_a+w)*n_a+v)*n_a+t)*n_a+u)*N_fit+i_f];
 
 //     set_zero_matr(RF_PV_AB, n_a*n_a*n_a*n_a*N_fit);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
@@ -1807,6 +1651,7 @@ int res_fit_data::calc_RF_2_CA(){
                                                        +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
                                                        -RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+u)*N_fit+i_f]
                                                        +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f];
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
@@ -1818,6 +1663,7 @@ int res_fit_data::calc_RF_2_CA(){
                                                        -RF_P3_HV[(((w*n_a+v)*n_a+t)*n_a+u)*N_fit+i_f];
     
 //     set_zero_matr(RF_PH, n_a*n_a*N_fit);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
@@ -1825,6 +1671,7 @@ int res_fit_data::calc_RF_2_CA(){
     for(int i_f=0; i_f<N_fit; i_f++)
         RF_PH[(t*n_a+u)*N_fit+i_f]+=-RF_P3_VV[(((((t*n_a+y)*n_a+v)*n_a+u)*n_a+v)*n_a+y)*N_fit+i_f]
                                     +RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+u)*n_a+v)*n_a+y)*N_fit+i_f]*2;
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int y=0; y<n_a; y++)
@@ -1833,6 +1680,7 @@ int res_fit_data::calc_RF_2_CA(){
                                     +RF_P3_VH[(((t*n_a+u)*n_a+y)*n_a+y)*N_fit+i_f]*2
                                     -RF_P3_HV[(((y*n_a+u)*n_a+y)*n_a+t)*N_fit+i_f]
                                     +RF_P3_HV[(((y*n_a+u)*n_a+t)*n_a+y)*N_fit+i_f]*2;
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int i_f=0; i_f<N_fit; i_f++)
@@ -2022,101 +1870,62 @@ int res_fit_data::calc_RF_2_CAVV(){
 }
 
 int res_fit_data::calc_RF_2_AAVV(){
-    
-//     num_threads=1;
-    double **JK_th= new double * [num_threads];
-    for(int i=0;i<num_threads;i++)JK_th[i]=new double[n_a*n_a*n_a*n_a*N_fit];
-    for(int i=0;i<num_threads;i++)set_zero_matr(JK_th[i],n_a*n_a*n_a*n_a*N_fit);
-
-    double **AB_th= new double * [num_threads];
-    for(int i=0;i<num_threads;i++)AB_th[i]=new double[n_a*n_a*n_a*n_a*N_fit];
-    for(int i=0;i<num_threads;i++)set_zero_matr(AB_th[i],n_a*n_a*n_a*n_a*N_fit);
-
-#ifdef _OPENBLAS
-    openblas_set_num_threads(1);
-#endif
-    omp_set_num_threads(num_threads);
-
-
-//     printf("%d %d %d\n", num_threads,omp_get_num_threads(), openblas_get_num_threads());
-//     getchar();
-    
-    
-    int n_i=n_c+n_a;
-    #pragma omp parallel
-    {
-        int nt =omp_get_thread_num();
-        
-        double AB,JK,dE;
-        
-        double * Ja;
-        
-        Ja = new double[n_a*n_a];
-        
-        for(int a=nt; a<n_v; a+=num_threads)
-        for(int b=a; b<n_v; b++){//fprintf(stderr,"AAVV a,b=%3d,%3d  (thread %2d)    \r",a,b,nt);
-// #ifdef _RI
-            cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasTrans,
-                            n_a,n_a,RI->aux_n_ao,1.0,
-                            RI->VA_RI_M+a*n_a*RI->aux_n_ao,RI->aux_n_ao,
-                            RI->VA_RI_M+b*n_a*RI->aux_n_ao,RI->aux_n_ao,0.0,
-                            Ja,n_a);
-// #endif        
-            for(int t=0  ;t<n_a;t++)
-            for(int u=0  ;u<n_a;u++)
-            for(int v=0  ;v<n_a;v++)
-            for(int w=0  ;w<n_a;w++){
-// #ifndef _RI
-//                 JK=(IEIE[(((t+n_c)*n_v+a)*n_i+u+n_c)*n_v+b]-
-//                     IEIE[(((t+n_c)*n_v+b)*n_i+u+n_c)*n_v+a])*
-//                    (IEIE[(((v+n_c)*n_v+a)*n_i+w+n_c)*n_v+b]-
-//                     IEIE[(((v+n_c)*n_v+b)*n_i+w+n_c)*n_v+a]);
-// #endif      
-// #ifdef _RI  
-                JK=(Ja[t*n_a+u]-Ja[u*n_a+t])*
-                   (Ja[v*n_a+w]-Ja[w*n_a+v]);
-// #endif
-// #ifndef _RI
-//                 AB         =IEIE[(((t+n_c)*n_v+a)*n_i+u+n_c)*n_v+b]*
-//                             IEIE[(((v+n_c)*n_v+a)*n_i+w+n_c)*n_v+b];
-//                 if(a!=b)AB+=IEIE[(((t+n_c)*n_v+b)*n_i+u+n_c)*n_v+a]*
-//                             IEIE[(((v+n_c)*n_v+b)*n_i+w+n_c)*n_v+a];
-// #endif      
-// #ifdef _RI  
-                AB         =Ja[t*n_a+u]*Ja[v*n_a+w];
-                if(a!=b)AB+=Ja[u*n_a+t]*Ja[w*n_a+v];
-// #endif            
-                   
-                for(int i_f=0;i_f<N_fit;i_f++){
-                    dE=e_a[t]+e_a[u]-e_v[a]-e_v[b]+E_fit[i_f];
-                    JK_th[nt][(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+i_f]+=JK*dE/(dE*dE+edshift);///inverse t-u in res_fit_calc_2body_AA (?)
-                    AB_th[nt][(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=AB*dE/(dE*dE+edshift);
+    // For the virtual pairs a <= b, J_ab[t,u] = (ta|ub) and the denominator D_ab(t,u; f) = dE/(dE^2 + s), dE = e_t + e_u - e_a - e_b + E_fit[f]:
+    //   RF_PV_AB[t,u,v,w,f] += sum_ab D_ab(t,u;f) [ J_ab[t,u] J_ab[v,w] + (a != b) J_ab[u,t] J_ab[w,v] ]
+    //   RF_PV_JK[u,t,v,w,f] += sum_ab D_ab(t,u;f) K_ab[t,u] K_ab[v,w],   K_ab[t,u] = J_ab[t,u] - J_ab[u,t]
+    // For a block of pairs: their J (one small product each, in parallel over the pairs), then for every output row (t,u) a matrix product over
+    // the pairs: row[(v,w), f] += sum_q Y_q[(v,w)] Y_q[(t,u)] D_q(t,u;f). Every thread writes its own rows: no per-thread copies of the tables.
+    const int n2 = n_a*n_a;
+    const int naux = RI->aux_n_ao;
+    std::vector<int> pa, pb;
+    for(int a=0; a<n_v; a++) for(int b=a; b<n_v; b++){ pa.push_back(a); pb.push_back(b); }
+    const int n_pair = (int)pa.size();
+    const int P = 512;   // pairs per block
+    std::vector<double> YAB((size_t)2*P*n2), YK((size_t)P*n2);
+    set_blas_non_par();
+    for(int p0=0; p0<n_pair; p0+=P){
+        const int np = (n_pair-p0 < P) ? n_pair-p0 : P;
+#pragma omp parallel
+        {
+            std::vector<double> Ja(n2);
+#pragma omp for schedule(dynamic)
+            for(int q=0; q<np; q++){
+                const int a=pa[p0+q], b=pb[p0+q];
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasTrans,n_a,n_a,naux,1.0,
+                            RI->VA_RI_M+(size_t)a*n_a*naux,naux,RI->VA_RI_M+(size_t)b*n_a*naux,naux,0.0,Ja.data(),n_a);
+                for(int t=0; t<n_a; t++) for(int u=0; u<n_a; u++){
+                    YAB[(size_t)(2*q)*n2+t*n_a+u]   = Ja[t*n_a+u];
+                    YAB[(size_t)(2*q+1)*n2+t*n_a+u] = (a!=b) ? Ja[u*n_a+t] : 0.0;
+                    YK [(size_t)q*n2+t*n_a+u]       = Ja[t*n_a+u]-Ja[u*n_a+t];
                 }
-                
             }
-                
-            
         }
-    
-       delete[] Ja;
-    
-    
+#pragma omp parallel
+        {
+            std::vector<double> GAB((size_t)2*np*N_fit), GK((size_t)np*N_fit);
+#pragma omp for schedule(dynamic)
+            for(int tu=0; tu<n2; tu++){
+                const int t=tu/n_a, u=tu%n_a;
+                for(int q=0; q<np; q++){
+                    const int a=pa[p0+q], b=pb[p0+q];
+                    const double y1=YAB[(size_t)(2*q)*n2+tu], y2=YAB[(size_t)(2*q+1)*n2+tu], yk=YK[(size_t)q*n2+tu];
+                    const double dE0=e_a[t]+e_a[u]-e_v[a]-e_v[b];
+                    for(int i_f=0; i_f<N_fit; i_f++){
+                        const double dE=dE0+E_fit[i_f];
+                        const double d=dE/(dE*dE+edshift);
+                        GAB[(size_t)(2*q)*N_fit+i_f]=y1*d;
+                        GAB[(size_t)(2*q+1)*N_fit+i_f]=y2*d;
+                        GK[(size_t)q*N_fit+i_f]=yk*d;
+                    }
+                }
+                cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,2*np,1.0,YAB.data(),n2,GAB.data(),N_fit,1.0,
+                            RF_PV_AB+(size_t)tu*n2*N_fit,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,np,1.0,YK.data(),n2,GK.data(),N_fit,1.0,
+                            RF_PV_JK+(size_t)(u*n_a+t)*n2*N_fit,N_fit);
+            }
+        }
     }
-    
-//     #pragma omp parallel for
-    for(long j=0; j<num_threads;j++)
-        for(long i=0; i<n_a*n_a*n_a*n_a*N_fit;i++)
-            RF_PV_JK[i]+=JK_th[j][i];
-//     #pragma omp parallel for
-    for(long j=0; j<num_threads;j++)
-        for(long i=0; i<n_a*n_a*n_a*n_a*N_fit;i++)
-            RF_PV_AB[i]+=AB_th[j][i];
-        
-    for(int i=0;i<num_threads;i++)delete[] JK_th[i];
-    delete[] JK_th;
-    
-    for(int i=0;i<num_threads;i++)delete[] AB_th[i];
-    delete[] AB_th;
+    set_blas_par();
     return 0;
 }
 
