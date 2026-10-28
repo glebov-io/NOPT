@@ -4,6 +4,8 @@
 *.gcda
 *.gcno
 /run_sQM
+# every program the Makefile links (run_%)
+/run_*
 /run_hessian
 /run_optimization
 /include/git_stamp.h
