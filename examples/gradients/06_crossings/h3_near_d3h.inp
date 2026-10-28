@@ -1,0 +1,16 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=0 CAS=1 XMC=1 D5=1 RI=1 NAME=h3_near_d3h $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvdz;
+ _RI_BASIS=cc-pvdz-ri;
+ _UNITS= ang;
+ _xyz
+3
+H3 near the D3h conical intersection (sides 0.90 / 0.92 / 0.88 A)
+H  0.000000  0.000000  0.000000
+H  0.900000  0.000000  0.000000
+H  0.440000  0.790000  0.000000
+$act_space n_alp=2 n_bet=1 n_val=3 mult=2 p_n=10; $end
+$END
+$CAS n_s=2 w_state=1 1; maxit=300 dE=1e-15 grad=1e-10 step=1e-11 p_cutoff=0.03 $END
+$XMC EDSHIFT=0.01 n_fit=40 $END

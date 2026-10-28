@@ -1,3 +1,5 @@
+#include <cstring>
+#include <cstdlib>
 # include <stdio.h>
 # include "blas_link.h"
 # include <omp.h>
@@ -848,14 +850,27 @@ int res_fit_data::E2_calc(double * E2){
     
     set_zero_matr(RF_PS, N_fit);
     
-    calc_RF_2_CCVV();printf_timer("CCVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CAVV();printf_timer("CAVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_AAVV();printf_timer("AAVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CCAV();printf_timer("CCAV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CCAA();printf_timer("CCAA res table");printf("\n");fflush(stdout);
-    calc_RF_2_CV  ();printf_timer("CV   res table");printf("\n");fflush(stdout);
-    calc_RF_2_AV  ();printf_timer("AV   res table");printf("\n");fflush(stdout);
-    calc_RF_2_CA  ();printf_timer("CA   res table");printf("\n");fflush(stdout);
+    // test switch: NOPT_XMC_BLOCKS=CCVV,CV,... keeps only the listed classes (exact names, comma separated; default: all eight)
+    const char * blk = getenv("NOPT_XMC_BLOCKS");
+    auto use = [&](const char * b){
+        if(!(blk && *blk)) return true;
+        const size_t lb = strlen(b);
+        for(const char * p = blk; *p; ){
+            const char * q = strchr(p, ','); const size_t l = q ? (size_t)(q - p) : strlen(p);
+            if(l == lb && !strncmp(p, b, lb)) return true;
+            if(!q) break; p = q + 1;
+        }
+        return false;
+    };
+    if(blk && *blk) fprintf(out_stream, "TEST: XMC PT classes restricted to %s\n", blk);
+    if(use("CCVV")){calc_RF_2_CCVV();printf_timer("CCVV res table");printf("\n");fflush(stdout);}
+    if(use("CAVV")){calc_RF_2_CAVV();printf_timer("CAVV res table");printf("\n");fflush(stdout);}
+    if(use("AAVV")){calc_RF_2_AAVV();printf_timer("AAVV res table");printf("\n");fflush(stdout);}
+    if(use("CCAV")){calc_RF_2_CCAV();printf_timer("CCAV res table");printf("\n");fflush(stdout);}
+    if(use("CCAA")){calc_RF_2_CCAA();printf_timer("CCAA res table");printf("\n");fflush(stdout);}
+    if(use("CV"))  {calc_RF_2_CV  ();printf_timer("CV   res table");printf("\n");fflush(stdout);}
+    if(use("AV"))  {calc_RF_2_AV  ();printf_timer("AV   res table");printf("\n");fflush(stdout);}
+    if(use("CA"))  {calc_RF_2_CA  ();printf_timer("CA   res table");printf("\n");fflush(stdout);}
     
     
     double **E2_th= new double * [num_threads];
