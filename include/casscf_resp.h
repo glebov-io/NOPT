@@ -113,6 +113,9 @@ void cas_sa_gamma(const CasRef & R, std::vector<double> * gamma_sa);
 
 // H c for arbitrary vectors (nvec x Nd, state-major) with the active-space integrals built from the orbitals C.
 void cas_H_apply(const CasRef & R, const double * C, const double * vecs, int nvec, double * Hv);
+// The gradients assume a stationary SA-CASSCF whose roots are eigenvectors: prints max |r_kappa|, max |r_delta| and max |(H - E) c| over all
+// roots, and returns 1 (with an ERROR line naming `who`) if one exceeds 1e-6. Not converged tightly, the gradient error is linear in them.
+int cas_reference_check(const CasRef & R, const char * who);
 
 // Derivative of <cbar|c(theta)> with respect to the rotation of the active orbitals t -> u carried by the CI vectors (aldet::malmqvist), for every pair t < u:
 // g[t*na+u] = d/dtheta sum_s <cbar_s | malmqvist(U(theta)) c_s>,  g[u*na+t] = -g[t*na+u],  U(theta) = 1 + theta (e_tu - e_ut) + ... (U[t*na+u] = sin) or its

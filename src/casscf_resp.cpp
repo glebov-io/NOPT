@@ -1129,12 +1129,35 @@ int cas_lagrangian_gradient(molecule * M, const CasRef & R, CasObjects & direct,
 }
 
 // ---- root gradient --------------------------------------------------------------------------------------------------
+int cas_reference_check(const CasRef & R, const char * who){
+    std::vector<double> r0; double Esa = 0;
+    cas_residual(R, R.C0.data(), R.c0.data(), &r0, nullptr, &Esa);
+    double rk = 0, rc = 0, eig = 0;
+    for(size_t k = 0; k < R.nk(); k++) rk = std::max(rk, std::fabs(r0[k]));
+    for(size_t k = R.nk(); k < R.nx(); k++) rc = std::max(rc, std::fabs(r0[k]));
+    std::vector<double> Hc(R.Nd);
+    for(int I = 0; I < R.ns_all; I++){
+        const std::vector<double> c = R.root_vector(I);
+        cas_H_apply(R, R.C0.data(), c.data(), 1, Hc.data());
+        const double E = dot(c.data(), Hc.data(), R.Nd);
+        for(size_t d = 0; d < R.Nd; d++) eig = std::max(eig, std::fabs(Hc[d] - E * c[d]));
+    }
+    fprintf(out_stream, "%s: CAS-SCF reference: max |r_kappa| = %.2e, max |r_delta| = %.2e, max |(H - E) c| over the roots = %.2e\n", who, rk, rc, eig);
+    if(rk > 1e-6 || rc > 1e-6 || eig > 1e-6){
+        fprintf(out_stream, "ERROR: %s: the CAS-SCF is not converged tightly enough for a gradient (the error is linear in these residuals); "
+                            "tighten $CAS grad/step and the CI ($dav de=1e-14 dr=1e-16 $end)\n", who);
+        return 1;
+    }
+    return 0;
+}
+
 int casscf_root_gradient(molecule * M, int root, double * g, double * E_out){
     if(deriv_check_supported(M)) return 1;
     if(RI == 0){ fprintf(out_stream, "ERROR: the CAS-SCF gradient is implemented for the RI energy only\n"); return 1; }
     CasRef R;
     if(R.build(M)) return 1;
     if(root < 0 || root >= R.ns_all){ fprintf(out_stream, "ERROR: root %d is not among the %d states of the CAS-SCF\n", root, R.ns_all); return 1; }
+    if(cas_reference_check(R, "CAS-SCF root gradient")) return 1;
     const std::vector<double> cn = R.root_vector(root);
     const double one = 1.0;
 

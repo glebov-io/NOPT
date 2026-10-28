@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "blas_link.h"
+#include "casscf_resp.h"
 #include "CAS.h"
 #include "common_vars.h"
 #include "integral_derivatives.h"
@@ -21,6 +22,10 @@ int casscf_sa_gradient(molecule * M, double * g, double * E_out){
     if(RI == 0){ fprintf(out_stream, "ERROR: the CAS-SCF gradient is implemented for the RI energy only\n"); return 1; }
     CAS_engine * C = M->CAS;
     if(C == nullptr){ fprintf(out_stream, "ERROR: casscf_sa_gradient needs a molecule with a CAS_SCF calculation behind it\n"); return 1; }
+    {
+        CasRef R;
+        if(R.build(M) || cas_reference_check(R, "SA-CASSCF gradient")) return 1;
+    }
     const int n = M->n_ao, nc = C->n_core, na = C->n_act, nmo = M->n_mo, na_atoms = M->n_atoms;
     const size_t n2 = (size_t)n * n, a2 = (size_t)na * na, a4 = a2 * a2;
 
