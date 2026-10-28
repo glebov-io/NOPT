@@ -58,3 +58,8 @@ ordering:
 |---|---|
 | `derivtest.sh` | every derivative-integral contraction against 4th-order finite differences of the integrals |
 | `PROG=run_ritest run.sh <dir> <any.inp>` | density-fitting adjoints on random data: L-only, V-only and both, a negative control, the J/K seeds, the adjoint of V^-1/2 |
+| `PROG=run_chaintest run.sh <dir> <any.inp>` | the chains of the PT inputs back to C, L, V, h (`pt_chain_B`, `pt_chain_H`) and the adjoint of the semicanonicalization (`pt_canon_vjp`, with and without the Fock-block seeds), against central finite differences of the forward definitions on random data, with the L/V adjoints in the auxiliary basis and in the eigenbasis of V; two negative controls |
+| `PROG=run_tapetest run.sh <dir> <any.inp>` | the reverse-mode tape: einsum (products, diagonals, scalar operands, accumulation, a threaded contraction), every DSRG regularizer with the orbital-energy adjoints and the Taylor branch of R, auxgemm, lin, constant leaves |
+
+The three programs need no molecule and no derivative libint (the input file is ignored); each prints PASS or FAIL and
+returns 0 or 1.
