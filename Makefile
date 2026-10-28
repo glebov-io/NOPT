@@ -83,6 +83,15 @@ ifeq ($(USE_BLOCK2),yes)
 # BLA_VENDOR=Apple exports _F77UNDERSCORE alone.
 ifeq ($(BLAS_DEF),-D_MKL)
 BLOCK2_BLAS_DEF:=-D_HAS_INTEL_MKL=2
+# NOPT links MKL's Intel threading layer (mkl_intel_thread + iomp5); a shared libblock2 must too.
+B2_SO:=$(BLOCK2_DIR)/lib/libblock2.so
+ifneq ($(wildcard $(B2_SO)),)
+ifneq ($(filter-out clean clean_gcov print,$(or $(MAKECMDGOALS),all)),)
+ifeq ($(shell readelf -d $(B2_SO) | grep -c 'NEEDED.*\[libmkl_intel_thread\.so'),0)
+$(error $(B2_SO) does not need libmkl_intel_thread; rebuild block2 with -DOMP_LIB=INTEL)
+endif
+endif
+endif
 else ifeq ($(BLAS_DEF),-D_OPENBLAS -D_ACCELERATE)
 BLOCK2_BLAS_DEF:=-D_F77UNDERSCORE
 else
