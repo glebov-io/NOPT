@@ -214,6 +214,7 @@ cas_par::cas_par(){
     ci_solver = CISOLVER_ALDET;
     converger = CONVERGER_SOSCF;
     lbfgs     = CAS_LBFGS_DEFAULT;
+    strict_symm = 1;
     //convergence
     max_it = CAS_MAX_IT_DEFAULT;
     e_conv = CAS_EN_CON_DEFAULT;
@@ -416,6 +417,15 @@ int cas_par::read_line(char * inp){
         }
     }
 
+    if(key_word_comp(inp, cas_strict_symm_kw)){
+        if      (kw_to_kw_exact(inp, cas_strict_symm_kw, cas_strict_symm_on_kw )) strict_symm = 1;
+        else if (kw_to_kw_exact(inp, cas_strict_symm_kw, cas_strict_symm_off_kw)) strict_symm = 0;
+        else{
+            fprintf(out_stream,"ERROR: unknown STRICT_SYMM value; accepted: on, off\n");
+            exit(1);
+        }
+    }
+
     if(key_word_comp(inp, cas_track_kw)){
         track=1;
     }
@@ -539,6 +549,8 @@ int cas_par::write_info(int n_a, int n_b, int n_o, int n_c, int mult){
         fprintf(out_stream,"Maximum SX-PT step          :     %e\n",x_max);
     }
     else fprintf(out_stream,"Maximum SOSCF step          :     %e\n",x_max);
+    if(strict_symm==0)
+        fprintf(out_stream,"Unlabelled orbitals (strict_symm):  optimized without symmetry\n");
     fprintf(out_stream,"\n");
     if      (ci_solver==CISOLVER_ALDET){
         fprintf(out_stream,"CI solver:                        determinant CI (aldet)\n");
@@ -1245,6 +1257,8 @@ avas_par::avas_par(){
 
     y=0;
     ref_basis = AVAS_REF_BASIS_DEFAULT;
+    ncore        = AVAS_NCORE_DEFAULT;
+    canonicalize = AVAS_CANONICALIZE_DEFAULT;
 
 }
 
@@ -1303,6 +1317,12 @@ int avas_par::read_line(char * inp){
         if(tmp){ ref_basis=tmp; delete[] tmp; }
     }
 
+    if(key_word_comp(inp, avas_ncore_kw))
+        ncore = kw_to_i(inp, avas_ncore_kw, AVAS_NCORE_DEFAULT);
+
+    if(key_word_comp(inp, avas_canonicalize_kw))
+        canonicalize = kw_to_i(inp, avas_canonicalize_kw, AVAS_CANONICALIZE_DEFAULT);
+
     return 0;
 }
 
@@ -1320,6 +1340,10 @@ int avas_par::validate(){
     }
     if(ref_basis.empty()){
         fprintf(out_stream,"ERROR: $AVAS ref_basis must not be empty\n");
+        ok=0;
+    }
+    if((canonicalize!=0)&&(canonicalize!=1)){
+        fprintf(out_stream,"ERROR: $AVAS canonicalize=%d; accepted: 0 (off), 1 (on)\n",canonicalize);
         ok=0;
     }
     // duplicates would repeat reference functions and make the reference overlap singular
@@ -1382,7 +1406,10 @@ int avas_par::write_info() const {
         if(shell_atom[i])fprintf(out_stream," %d:%d%c",shell_atom[i],shell_n[i],avas_l_labels[shell_l[i]]);
         else             fprintf(out_stream," %d%c",shell_n[i],avas_l_labels[shell_l[i]]);
     }
-    fprintf(out_stream,"\n\n");
+    fprintf(out_stream,"\n");
+    fprintf(out_stream,"Excluded core orbitals:           %d\n",ncore);
+    fprintf(out_stream,"Canonicalization:                 %s\n",canonicalize?"on":"off");
+    fprintf(out_stream,"\n");
 
     return 0;
 }
@@ -1555,6 +1582,45 @@ xmc_par::~xmc_par(){
         
 }
 
+gno_par::gno_par(){
+
+    mode=CDAS_MODE_NATIVE;
+    skip_scalar=-1;
+    m_delta=0;
+    sweeps_branch=0;
+    dav_branch=0.0;
+
+}
+
+bool gno_par::on() const{
+
+    if     (mode==CDAS_MODE_NATIVE)    return false;
+    else if(mode==CDAS_MODE_TRUNC_GNO) return true;
+    else if(mode==CDAS_MODE_DELTA_GNO) return true;
+    else{
+        fprintf(out_stream,"ERROR: unknown cdas_mode; accepted: native, trunc_gno, delta_gno\n");
+        exit(1);
+    }
+
+}
+
+int gno_par::write_info(){
+
+    fprintf(out_stream,"\nCDAS mode                         ");
+    if     (mode==CDAS_MODE_TRUNC_GNO) fprintf(out_stream,"trunc_gno\n");
+    else if(mode==CDAS_MODE_DELTA_GNO) fprintf(out_stream,"delta_gno\n");
+    else                               fprintf(out_stream,"unknown\n");
+    fprintf(out_stream,"GNO scalar                        %s\n",skip_scalar?"skipped":"computed");
+    if(mode==CDAS_MODE_DELTA_GNO)
+        fprintf(out_stream,"Branch bond dimension             %d\n",m_delta);
+
+    return 0;
+}
+
+gno_par::~gno_par(){
+
+}
+
 cdas_par::cdas_par(){
     
     y=0;
@@ -1571,6 +1637,8 @@ cdas_par::cdas_par(){
     fit_e=0;
     rotate_orbs=1;//default - perform rotation
     pt1_d=1;
+    m_cdas=0;
+    m_cdas_set=false;
 
 }
 
@@ -1596,6 +1664,11 @@ int cdas_par::read_group(char * inp, cas_par * ext_cas){
         P.r_gets(line,BUF_LINE_LENGTH);;
     }
     
+    if(gno.mode==CDAS_MODE_UNKNOWN){
+        fprintf(out_stream,"ERROR: $CDAS unknown cdas_mode value; accepted: native, trunc_gno, delta_gno\n");
+        exit(1);
+    }
+
     if((IPEA+MPPT+HOMO+actual+sing_e+mult_e+orb_e+fit_e)!=1){
         fprintf(out_stream,"ERROR: incorrect choice of energy scheme\n");
         fprintf(out_stream,"       IPEA                    - %c%c%c\n",ny[3*IPEA  ],ny[3*IPEA  +1],ny[3*IPEA  +2]);
@@ -1623,9 +1696,82 @@ int cdas_par::read_group(char * inp, cas_par * ext_cas){
         }
     }
 
+    //the default the mode asks for: trunc_gno carries F0 in its energies, delta_gno cancels it
+    if(gno.skip_scalar==-1) gno.skip_scalar = (gno.mode==CDAS_MODE_TRUNC_GNO) ? 0 : 1;
 
+    if(gno.skip_scalar!=0&&gno.skip_scalar!=1){
+        fprintf(out_stream,"ERROR: $CDAS skip_gno_scalar accepts 0|1, off|on, false|true\n");
+        exit(1);
+    }
+
+    if(gno.on()&&MPPT){
+        fprintf(out_stream,"ERROR: cdas_mode=trunc_gno|delta_gno run the EE and IPEA schemes only;"
+                           " drop MPPT or use cdas_mode=native\n");
+        exit(1);
+    }
+
+    if(gno.on()&&ext_cas->ci_solver!=CISOLVER_DMRG){
+        fprintf(out_stream,"ERROR: cdas_mode=trunc_gno|delta_gno needs a CI backend with named operator handles;"
+                           " use cisolver=dmrg\n");
+        exit(1);
+    }
+
+    if(gno.on()){
+        //the branch follows the reference solve's budget and threshold
+        gno.sweeps_branch = ext_cas->dmrg.sweeps;
+        gno.dav_branch    = ext_cas->dmrg.sweep_tol/10.0;
+
+        if(gno.mode==CDAS_MODE_DELTA_GNO){
+            if(gno.m_delta<=0){
+                fprintf(out_stream,"ERROR: $CDAS cdas_mode=delta_gno needs m_delta=<branch bond dimension> (> 0)\n");
+                exit(1);
+            }
+            if(gno.m_delta>ext_cas->dmrg.m){
+                fprintf(out_stream,"ERROR: $CDAS m_delta=%d is above the reference bond dimension $DMRG m=%d;\n",
+                        gno.m_delta,ext_cas->dmrg.m);
+                fprintf(out_stream,"       m_delta above the reference bond dimension is not a compression\n");
+                exit(1);
+            }
+        }
+    }
+
+    if(m_cdas_set&&m_cdas<=0){
+        fprintf(out_stream,"ERROR: $CDAS m_cdas=<PT-stage bond dimension> must be > 0\n");
+        exit(1);
+    }
+
+    if(m_cdas_set&&gno.on()){
+        fprintf(out_stream,"ERROR: $CDAS m_cdas applies to cdas_mode=native only;\n");
+        fprintf(out_stream,"       the GNO reference follows $DMRG m, and in delta_gno the branches follow m_delta\n");
+        exit(1);
+    }
+
+    if(m_cdas_set&&ext_cas->ci_solver!=CISOLVER_DMRG){
+        fprintf(out_stream,"ERROR: $CDAS m_cdas is a DMRG bond dimension; use cisolver=dmrg\n");
+        exit(1);
+    }
 
     return 0;
+}
+
+int is_splitter(char a);
+
+//exact-token value match: case-insensitive over val, which must be closed by a splitter
+//or the end of the line, so a longer value is not a hit. The "=" binds to the matched
+//keyword: only blanks may stand between them, anything else is no match.
+static int cdas_kw_value_is(char * inp, vector<const char *> keywords, const char * val){
+
+    char * f = key_word_find(inp, keywords);
+    if(f==nullptr) return 0;
+    char * s = f;
+    while(s[0]!='\0'&&!is_splitter(s[0]))s++;
+    while(s[0]==' ')s++;
+    if(s[0]!='=') return 0;
+    while(is_splitter(s[0]))s++;
+    int i=0;
+    while(val[i]!='\0'&&tolower((unsigned char)s[i])==tolower((unsigned char)val[i]))i++;
+    if(val[i]!='\0') return 0;
+    return (s[i]=='\0'||is_splitter(s[i]));
 }
 
 int cdas_par::read_line(char * inp){
@@ -1680,6 +1826,32 @@ int cdas_par::read_line(char * inp){
     if(key_word_comp(inp, pt1_dipole_kw))
         pt1_d = kw_to_i(inp, pt1_dipole_kw,1);
 
+    if(key_word_comp(inp, cdas_m_cdas_kw)){
+        m_cdas = kw_to_i(inp, cdas_m_cdas_kw,0);
+        m_cdas_set = true;
+    }
+
+    if(key_word_comp(inp, cdas_mode_kw)){
+        if     (cdas_kw_value_is(inp, cdas_mode_kw, "native"   )) gno.mode = CDAS_MODE_NATIVE;
+        else if(cdas_kw_value_is(inp, cdas_mode_kw, "trunc_gno")) gno.mode = CDAS_MODE_TRUNC_GNO;
+        else if(cdas_kw_value_is(inp, cdas_mode_kw, "delta_gno")) gno.mode = CDAS_MODE_DELTA_GNO;
+        else                                                      gno.mode = CDAS_MODE_UNKNOWN;
+    }
+
+    if(key_word_comp(inp, cdas_m_delta_kw))
+        gno.m_delta = kw_to_i(inp, cdas_m_delta_kw,0);
+
+    //a value the keyword does not accept sticks: a later line of the group cannot overwrite it
+    if(key_word_comp(inp, cdas_skip_gno_scalar_kw)&&gno.skip_scalar!=2){
+        if     (cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "0"    )
+              ||cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "off"  )
+              ||cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "false")) gno.skip_scalar = 0;
+        else if(cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "1"    )
+              ||cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "on"   )
+              ||cdas_kw_value_is(inp, cdas_skip_gno_scalar_kw, "true" )) gno.skip_scalar = 1;
+        else                                                             gno.skip_scalar = 2;
+    }
+
     return 0;
 }
 
@@ -1730,7 +1902,10 @@ int cdas_par::write_info(int n_a, int n_b, int n_o, int mult){
         // exit(0);
     // }
     fprintf(out_stream,"\nPT first order term: %s\n",pt1_d?"yes":"no");
+    if(m_cdas_set)
+        fprintf(out_stream,"PT-stage bond dimension (m_cdas)  %d\n",m_cdas);
     
+    if(gno.on()) gno.write_info();
 
     
 //     dav.write_info();

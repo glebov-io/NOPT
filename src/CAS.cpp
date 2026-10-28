@@ -25,6 +25,7 @@
 # include "timer.h"
 # include "jacobi.h"
 # include "common_vars.h"
+# include <sys/stat.h>
 
 
 extern int num_threads;
@@ -730,7 +731,7 @@ int CAS_engine::calc_grad(double * G_state, double * F_state, double * G_ga_stat
     for(int i=0;i<n_core;i++)
     for(int t=0;t<n_act;t++){
         g_it[i*n_act+t]=4*F_state[i*n_ao+(t+n_core)]-2*G_ga_state[i*n_act+t];
-	if(rep_num[i]!=rep_num[n_core+t]){
+	if(mask_by_irrep && rep_num[i]!=rep_num[n_core+t]){
             g_it[i*n_act+t]=0;
         }
     }
@@ -738,7 +739,7 @@ int CAS_engine::calc_grad(double * G_state, double * F_state, double * G_ga_stat
     for(int i=0;i<n_core;i++)
     for(int a=0;a<n_vac;a++){
         g_ia[i*n_vac+a]=4*F_state[i*n_ao+(a+n_core+n_act)];
-        if(rep_num[i]!=rep_num[a+n_core+n_act]){
+        if(mask_by_irrep && rep_num[i]!=rep_num[a+n_core+n_act]){
             g_ia[i*n_vac+a]=0;
        }
     }
@@ -746,7 +747,7 @@ int CAS_engine::calc_grad(double * G_state, double * F_state, double * G_ga_stat
     for(int t=0;t<n_act;t++)
     for(int a=0;a<n_vac  ;a++){
         g_ta[t*n_vac+a]=2*G_ga_state[(a+n_core+n_act)*n_act+t];
-        if(rep_num[t+n_core]!=rep_num[a+n_core+n_act]){
+        if(mask_by_irrep && rep_num[t+n_core]!=rep_num[a+n_core+n_act]){
             g_ta[t*n_vac+a]=0;
         }
     }
@@ -869,11 +870,10 @@ int CAS_engine::make_canonical(bool with_active){
         double * U_canon  = nullptr;//to be move to molecule
         U_canon  = new double[n_act*n_act];
         
-        for(int i=0;i<n_act;i++)
-            for(int j=0;j<n_act;j++)
-                U_canon[i*n_act+j]=F_tot[(i+n_core)*n_ao+(j+n_core)];
-        lapack_diag(U_canon, M->orb_energy+n_core, n_act);//ir.rep can be broken -- must be rewritten in the "diag_X_MO_block"-style
-        normalize_rotation_rows(U_canon, n_act);
+        // diag_X_MO_block rotates the active rows by R (per irrep under $SYMM) and returns R^T;
+        // the composition and the report below take R = <canon|solve>, hence the transpose back.
+        M->diag_X_MO_block(F_tot, n_core, n_act, U_canon);
+        transpose(U_canon, n_act, n_act);
 
         // The wavefunction sits in the last solved basis, and a canonicalization may still be owed
         // to it, so this one composes with what is pending: U_total = U_canon * U_pending.
@@ -891,15 +891,7 @@ int CAS_engine::make_canonical(bool with_active){
         }
         CI->set_report_rotation(U_pending.data());
         
-        double * B  = new double[n_act*n_ao];
-        cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,
-                    n_act,n_ao,n_act,1.0,
-                    U_canon,n_act,
-                    M->MO_VEC+n_core*n_ao,n_ao,0.0,
-                    B,n_ao);
-        memcpy(M->MO_VEC+n_core*n_ao, B, n_act*n_ao*sizeof(double));
         M->check_orb_symmetry();
-        delete[] B;
         
         // Refresh the active orbital copy. No tensors_recalc here -- it would re-localize and
         // advance the warm-start frame past the retained wavefunction.
@@ -1337,6 +1329,27 @@ CAS_engine::~CAS_engine(){
     
 }
 
+// Writes cas_iter/<job_name>_CAS_it<kkk>.{orb,orb_GAMESS,out} of the current orbitals (the .out core+active
+// only), with diag(F) in their energy field; orb_energy is restored, so the run's state is untouched.
+static void write_iter_orbs(molecule * M, const double * F, const char * job_name, int it){
+    const char * folder = "cas_iter";
+    struct stat st = {0};
+    if (stat (folder, &st) == -1) {
+        mkdir(folder, 0755);
+    }
+    const int n_ao = M->n_ao;
+    std::vector<double> e_backup(M->orb_energy, M->orb_energy+n_ao);
+    for(int i=0;i<n_ao;i++)M->orb_energy[i]=F[i*n_ao+i];
+
+    M->MO_gamess_format();
+    char name[BUF_LINE_LENGTH];
+    snprintf(name,sizeof(name),"%s/%s_CAS_it%03d.out",folder,job_name,it);
+    M->GAMESS_type_out_print(name, M->n_cor_orb+M->n_act_orb[0]);
+    snprintf(name,sizeof(name),"%s/%s_CAS_it%03d.orb",folder,job_name,it);
+    M->MO_print(name);
+
+    memcpy(M->orb_energy, e_backup.data(), sizeof(double)*n_ao);
+}
 
 int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     
@@ -1400,11 +1413,34 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     jacobi_mcscf_sd_engine j_sd;
     j_sd.init(CAS->G,CAS->B,CAS->n_core, CAS->n_act,CAS->n_vac,CAS->n_ao,CAS->n_s_opt,cas->x_max);
 
+    // Under $SYMM the gradient mask and sxpt's per-irrep blocks confine an orbital without an irrep
+    // label to the other unlabelled ones. If an optimized orbital has none, strict_symm=on aborts and
+    // off rotates all orbitals without symmetry (c1_rot; sxpt then reads c1_rep_num, all -1).
+    bool c1_rot = false;
+    std::vector<int> c1_rep_num;
+    if(IS_SYM && cas->max_it>0){
+        const int n_opt = CAS->n_core+CAS->n_act+CAS->n_vac;
+        int n_unlab = 0, first = -1;
+        for(int p=0;p<n_opt;p++)if(M->rep_num[p]<0){ if(first<0)first=p; n_unlab++; }
+        if(n_unlab>0 && cas->strict_symm){
+            fprintf(out_stream,"ERROR: %d optimized orbitals carry no irrep label (first: MO %d); set $CAS strict_symm=off"
+                               " to optimize them without symmetry, or run without $SYMM\n",n_unlab,first);
+            exit(1);
+        }
+        if(n_unlab>0){
+            fprintf(out_stream,"NOTE: %d optimized orbitals carry no irrep label; orbital rotations are not"
+                               " restricted by symmetry in this run\n",n_unlab);
+            c1_rot = true;
+            CAS->mask_by_irrep = false;
+            c1_rep_num.assign(n_opt,-1);
+        }
+    }
+
     //super-CI-PT engine
     superci_pt_engine SXPT;
     if(cas->converger==CONVERGER_SXPT)
-        SXPT.init(CAS->n_core, CAS->n_act, CAS->n_vac, CAS->n_ao, M->rep_num, M->S.n_rep, cas->x_max,
-                  cas->lbfgs);
+        SXPT.init(CAS->n_core, CAS->n_act, CAS->n_vac, CAS->n_ao, c1_rot ? c1_rep_num.data() : M->rep_num,
+                  M->S.n_rep, IS_SYM!=0 && !c1_rot, cas->x_max, cas->lbfgs);
     
     dmrg_log_set_tag(dmrg_log_tag::primary);
     n_dav_conv = CAS->CI_calc(1,0,0);
@@ -1500,6 +1536,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
         }
         fprintf(out_stream,"%3d |% 18.10f | % .3e | %.3e | %.3e | %3d   |%s%s%s%s%s%s\n",n_iter,E,E-E_old,max_grad_el, rot_step,n_dav_conv, de_val, dw_val, od_val, hit_max?" *":"", cold_fb?" c":"", diis_reset?" r":"");
         fflush(out_stream);
+        write_iter_orbs(M, CAS->F_tot, job_name, n_iter);
 //         getchar();
 //         exit(0);
         if(fabs(E-E_old)<cas->e_conv && max_grad_el<CAS_E_EXIT_GRAD_FACTOR*cas->g_conv){converged=1; break;}
@@ -1541,6 +1578,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
         n_iter++;
 //         PrintMatr(M->nat_orb_occ,M->n_act_orb[0],1,1);
     }
+    CAS->scf_exit = converged;
     enable_print_timers();
     set_zero_matr(M->orb_energy,M->n_ao);
     
@@ -1568,6 +1606,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
     
     
     //calculate canonical orbitals
+    if(c1_rot)M->check_orb_symmetry();   // the canonicalization reads the labels the C1 rotations left stale
     CAS->make_canonical(/*with_active=*/true);
     
     if(LINEAR)CAS->rotate();

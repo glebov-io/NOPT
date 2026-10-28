@@ -87,6 +87,12 @@ vector<const char *>converger_sxpt_kw{{"sxpt"}};
 
 vector<const char *>cas_lbfgs_kw{{"lbfgs"}};
 
+vector<const char *>cas_strict_symm_kw{{"strict_symm"}};
+
+vector<const char *>cas_strict_symm_on_kw{{"on"}};
+
+vector<const char *>cas_strict_symm_off_kw{{"off"}};
+
 vector<const char *>num_state_kw{{"n_s"},
                                  {"numstate"},
                                  {"num_state"}};
@@ -243,6 +249,8 @@ vector<const char *>avas_group_end{{"$avasend"},
 vector<const char *>avas_atoms_kw{{"atoms"}};
 vector<const char *>avas_shells_kw{{"shells"}};
 vector<const char *>avas_ref_basis_kw{{"ref_basis"}};
+vector<const char *>avas_ncore_kw{{"ncore"}};
+vector<const char *>avas_canonicalize_kw{{"canonicalize"}};
 
 vector<const char *>MO_group_start{{"$vec1"},
                                    {"$vec"},
@@ -471,6 +479,14 @@ vector<const char *>cdas_orb_en_kw{{"use_orb_for_energy"}};
 vector<const char *>cdas_fit_en_kw{{"use_firefly_fit_energy"}};
                                    
 vector<const char *>cdas_rot_orbs{{"rotate"}};
+
+vector<const char *>cdas_mode_kw{{"cdas_mode"}};
+
+vector<const char *>cdas_skip_gno_scalar_kw{{"skip_gno_scalar"}};
+
+vector<const char *>cdas_m_delta_kw{{"m_delta"}};
+
+vector<const char *>cdas_m_cdas_kw{{"m_cdas"}};
 
 vector<const char *>dsrg_kw{{"dsrg"}};
 

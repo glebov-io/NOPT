@@ -35,6 +35,7 @@ public:
     void set_localization(const double* U) override;
     void set_active_rotation(const double* R) override;
     void set_report_rotation(const double* U) override;
+    bool report_rotation(std::vector<double>& U) const override;
     void set_state_weights(const double* w, int n_s) override;
     void import_integrals(double* aaaa, double* f_act, double e_core) override;
     // Encode a TOTAL dressed active-space operator (F_act+g1, (tu|vw)+g2, g3, E_core+E0) as one
@@ -44,7 +45,24 @@ public:
     bool supports_dressed_import() const override { return true; }
     void import_dressed_operator(const double* h1_total, const double* h2_total,
                                  const double* h3_total, double const_total) override;
-    
+    // Named handles: the folded and dressed general MPOs live alongside the bare one, and any of
+    // the three can be selected for the solves. Tensors arrive exactly as the dressed import takes
+    // them.
+    bool supports_operator_handles() const override { return true; }
+    void import_named_operator(int kind, const double* h1, const double* h2,
+                               const double* h3, double c) override;
+    void select_operator(int kind) override;
+    // Branch machinery: a zero-noise continuation of the retained MultiMPS under one handle at an
+    // explicit bond dimension, named MultiMPS checkpoints it starts from, and named single-root
+    // state sets with their cross-set overlaps and expectation values.
+    int solve_branch(int kind, int m, int n_sweeps, double dav_tol, bool one_site_tail) override;
+    void save_checkpoint(const char* name) override;
+    void load_checkpoint(const char* name) override;
+    void save_state_set(const char* name) override;
+    void overlap_sets(const char* a, const char* b, double* S) override;
+    void expect_set(const char* name, int kind, double* E) override;
+    void release_named_states() override;
+
     void PT2_import_data(double * ext_T3,
                          double * ext_T3_AB,
                          double * ext_T2,
@@ -95,6 +113,12 @@ public:
     double energy_resolution() const override;
     double last_order_drift() const override;
     bool last_solve_cold() const override;
+    // Records of the last solve_branch; a plain solve leaves them at their previous values.
+    double last_entry_dw() const override;
+    double last_tail_dw() const override;
+    int last_tail_sweeps() const override;
+    bool last_solve_converged() const override;
+    int last_max_bond_dim() const override;
 
     // --- IO / diagnostics ---
     void gen_ext_ind() override;
