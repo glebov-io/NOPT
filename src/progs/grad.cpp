@@ -1,7 +1,8 @@
 // grad: single point plus analytic nuclear gradient.
 //   run_grad -i input.inp [-root N] [-json FILE] [-numgrad h]
 // Runs the energy calculation exactly as run_sQM does, then differentiates the energy of the method the input selects:
-//   RHF (exact and RI);  SA-CASSCF (RI, determinant CI): the state-averaged energy, or with -root N the energy of root N.
+//   RHF (exact and RI);  SA-CASSCF (RI, determinant CI): the state-averaged energy, or with -root N the energy of root N;
+//   DSRG-PT2 (RI, determinant CI, unrelaxed or relax=once): the energy the $DSRG group defines (root=, or the ensemble with sa=1).
 // Anything else is refused, not approximated. Weights: any nonnegative SA weights (zero-weight roots are spectators).
 // The gradient is printed (Eh/bohr, dE/dR) and, with -json FILE (or NOPT_GRAD_JSON=FILE), appended as a JSON line.
 // -root N overrides NOPT_GRAD_ROOT. NOPT_GRAD_REPEAT=1: a second call in the same process must reproduce the first (exit code 6 otherwise).
@@ -23,6 +24,7 @@
 #include "casscf_resp.h"
 #include "gradient_result.h"
 #include "gradient_driver.h"
+#include "dsrg_grad.h"
 #include "grabbers.h"
 #include "RI.h"
 #include <omp.h>
@@ -51,7 +53,7 @@ int main(int argc, char ** argv){
     const char * method = analytic_gradient_method(&P);
     if(!method) return 3;
     const char * root_env = getenv("NOPT_GRAD_ROOT");
-    const bool is_rhf = !strcmp(method, "rhf");
+    const bool is_rhf = !strcmp(method, "rhf"), is_dsrg = !strcmp(method, "dsrg_pt2");
     int root = (root_env && *root_env) ? atoi(root_env) : -1;
     if(is_rhf) root = -1;
     std::vector<double> g(3 * M.n_atoms);
@@ -61,7 +63,7 @@ int main(int argc, char ** argv){
     const double t_analytic = omp_get_wtime() - t_start;
     if(rc) return rc;
 
-    const char * title = is_rhf ? "RHF" : (root >= 0 ? "CAS-SCF root" : "SA-CASSCF");
+    const char * title = is_rhf ? "RHF" : is_dsrg ? (P.dsrg.relax ? "DSRG-PT2 (relax=once)" : "DSRG-PT2 (unrelaxed)") : (root >= 0 ? "CAS-SCF root" : "SA-CASSCF");
     fprintf(out_stream, "\n\nAnalytic %s gradient (%s), E = % .12f, Eh/bohr, dE/dR:\n", title, RI ? "RI" : "exact", E);
     for(int a = 0; a < M.n_atoms; a++)
         fprintf(out_stream, "  %-3s % .12f % .12f % .12f\n", M.atom_names[a], g[3 * a], g[3 * a + 1], g[3 * a + 2]);
@@ -70,6 +72,7 @@ int main(int argc, char ** argv){
     if(numgrad_h > 0.0){
         // the numerical gradient as optimization_w_num_grad_calc computes it: 6 n_atoms energies, displaced +-h one coordinate at a time, in this process
         const double ta = t_analytic;
+        g_dsrg_grad.want = false;      // energies only from here on
         const int idx = root >= 0 ? root : 0;
         grab_E = 1;
         single_point_calc(&P, &M);

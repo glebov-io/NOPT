@@ -76,6 +76,7 @@ energy record. The scripts below run it on the fixtures:
 |---|---|
 | `rhf_gradient.sh` | RHF, exact and RI; invariances, thread independence |
 | `casscf_gradient.sh`, `casscf_root_gradient.sh` | SA-CASSCF energy; individual roots, zero and unequal weights |
+| `dsrg_gradient.sh`, `dsrg_relax_gradient.sh` | DSRG-PT2, unrelaxed and relax=once: state-specific, a root of an SA reference (also of zero weight), the SA ensemble |
 | `opt_check.sh` | `run_opt` converges (RHF, SA-CASSCF energy, a CAS-SCF root) |
 | `regress_all.sh` | all of the above, the energy regression and the component checks, one PASS/FAIL line per step |
 
