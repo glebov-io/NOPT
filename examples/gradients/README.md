@@ -82,7 +82,10 @@ repeat the three-body contraction and slow it down.
 |---|---|---|---|---|
 | guanine CAS(10,10) SA-4, energy | 12.7 GB | 4096 / 1000 | 5.3 / 2.2 GB | same / same |
 | indole SA-4 (12o,8e), energy | 36.1 GB | 4096 / 2000 | 5.8 / 3.7 GB | +2% / +4% |
-| guanine, gradient of root 0 | 12.7 GB | 1000 | 2.6 GB | +10% |
+| guanine, gradient of root 0 | 12.7 GB | 4096 / 1000 | 5.7 / 2.6 GB | -8% / -5% |
+
+The gradient is faster in windows than with the whole tables: there the three-body CI and grid derivatives sum per determinant and need
+almost no atomic updates.
 
 `NOPT_XMC_FULL_TABLES=1` keeps the whole tables (as the self-tests `NOPT_XMC_VJP_TEST`, `NOPT_XMC_ADJ_TEST` do).
 
