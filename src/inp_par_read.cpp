@@ -755,6 +755,7 @@ dav_par::dav_par(){
     se_min = DAV_SE_MIN_DEFAULT;
     edshift= DAV_ED_SHIFT_DEFAULT;
     sparsed_Hc = 0;
+    spin_proj = 0;
     
 }
 
@@ -816,6 +817,10 @@ int dav_par::read_line(char * inp){
         sparsed_Hc = kw_to_i(inp, dav_sparsed_HC_kw, 0);
     }
 
+    if(key_word_comp(inp, dav_spin_proj_kw)){
+        spin_proj = kw_to_i(inp, dav_spin_proj_kw, 0);
+    }
+
     
     
     return 0;
@@ -832,6 +837,7 @@ int dav_par::write_info(){
     fprintf(out_stream,"Orthogonality cut-off:            %e\n",se_min );
     fprintf(out_stream,"Energy denominator shift:         %e\n",edshift);
     fprintf(out_stream,"Sparsed multiplication:           %s\n",sparsed_Hc?"yes":"no");
+    fprintf(out_stream,"Spin projection:                  %s\n",spin_proj?"yes":"no");
     fprintf(out_stream,"\n");
     
     return 0;

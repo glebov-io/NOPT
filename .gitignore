@@ -6,6 +6,7 @@
 /run_sQM
 /run_hessian
 /run_optimization
+/run_spinprojtest
 /include/git_stamp.h
 
 # Per-machine build config: paths differ on every machine, so it is not tracked.
