@@ -25,6 +25,7 @@ step dsrg_gradient         "$HERE/dsrg_gradient.sh"
 step dsrg_relax_gradient   "$HERE/dsrg_relax_gradient.sh"
 step xmc_gradient          "$HERE/xmc_gradient.sh"
 step xmc_hard_cases        "$HERE/xmc_hard_cases.sh"
+step xmc_windows           "$HERE/xmc_windows.sh"
 step opt_check             "$HERE/opt_check.sh"
 echo "step logs: $W"
 exit $rc

@@ -3,6 +3,7 @@
 
 # include "RI.h"
 # include "aldet.h"
+# include <vector>
 
 class res_fit_data;
 
@@ -48,6 +49,16 @@ class res_fit_data
         
         double * RF_P3_JK;
         double * RF_P3_AB;
+        
+        // The three-body tables in windows of the energy grid: RF_P3_JK/AB hold the grid points win_f0 .. win_f0 + win_nf - 1 (stride win_nf).
+        // full_tables (set before gen_grid): one window over the whole grid, kept after E2_calc (the analytic gradient and the self-tests read the
+        // tables); otherwise the windows are built, contracted and dropped one after the other, NOPT_XMC_WINDOW_MB bounding their memory.
+        int full_tables = 1;
+        int win_f0 = 0, win_nf = 0;
+        // strings ordered so that the start of the interpolation stencil grows along them for every other string and state (E_act = Ea + Eb)
+        std::vector<int> order_b, order_a;
+        // the windowed part of E2_calc: AV, CA and the three-body contraction for every window
+        int E2_windows(double ** E2_th, bool av, bool ca);
         
         
         //functions
