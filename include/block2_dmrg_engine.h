@@ -159,14 +159,16 @@ inline void blas_set_num_threads(int n) {
 #endif
 }
 
-// Pin block2 to the host OpenMP/BLAS thread count on entering a block2 region; restore on exit.
+// Restore the host's OpenMP/BLAS thread counts on leaving a block2 region; every path into block2
+// code that can change thread state holds one before its first block2 call.
 struct host_threads_guard {
     int omp_saved;
     int blas_saved;
     host_threads_guard() : omp_saved(omp_get_max_threads()), blas_saved(blas_get_num_threads()) {}
     ~host_threads_guard() {
+        // OpenMP last: an OpenMP-threaded OpenBLAS up to 0.3.21 resets it in openblas_set_num_threads.
+        blas_set_num_threads(blas_saved);
         omp_set_num_threads(omp_saved);
-        blas_set_num_threads(blas_saved); // restore the host's BLAS count independently of OMP
     }
     host_threads_guard(const host_threads_guard &) = delete;
     host_threads_guard &operator=(const host_threads_guard &) = delete;

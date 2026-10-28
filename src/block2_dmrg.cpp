@@ -682,6 +682,7 @@ static const int DMRG_GAOPT_DRIFT_TASKS = 1;
 
 void block2_casci_wrap::import_integrals(double *aaaa, double *f_act, double e_core) {
     dmrgci_engine &e = *impl_;
+    host_threads_guard htg;
     n_act_ = e.n_act;
     const int n = n_act_; //short name for more readability
     
