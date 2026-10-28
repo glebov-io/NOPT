@@ -220,6 +220,7 @@ int res_fit_data::gen_grid(int ext_N_fit, int ext_n_fit_pol){
         std::stable_sort(order_b.begin(), order_b.end(), [&](int x, int y){ return Ea[x] > Ea[y]; });            // Eb(j) = E_act[0,j] - E_act[0,0]
         std::stable_sort(order_a.begin(), order_a.end(), [&](int x, int y){ return Ea[(size_t)x*Nb] > Ea[(size_t)y*Nb]; });   // Ea(i)
     }
+    build_rep_lists();
 
     return 0;
 }
@@ -634,39 +635,90 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
 //     y_b '
 //     
 //     t-u-v-w-x-y
+// the doubles E_tu E_vw (t < u occupied, v < w empty after removing t, u) of every string, signs as res_fit_calc_3body_AB accumulates them
+static void rf_build_doubles(rf_rep_list & L, int N, int n, int Ns, const int * vec, int * f){
+    std::vector<int> bit(N), buf(n + 2, 0);
+    L.off.assign(Ns + 1, 0); L.ext.clear(); L.orb.clear(); L.sgn.clear();
+    for(int i = 0; i < Ns; i++){
+        std::fill(bit.begin(), bit.end(), 0);
+        for(int k = 1; k < n + 1; k++) bit[vec[i * (n + 1) + k] - 1] = 1;
+        for(int t = 0; t < N; t++) if(bit[t]){
+            bit[t] = 0; int s1 = 1;
+            for(int u = t + 1; u < N; u++) if(bit[u]){
+                bit[u] = 0; int s2 = 1;
+                for(int v = 0; v < N; v++){
+                    if(!bit[v]){
+                        bit[v] = 1; int s5 = s2;
+                        for(int w = v + 1; w < N; w++){
+                            if(!bit[w]){
+                                bit[w] = 1;
+                                L.ext.push_back(get_ind_from_ON(bit.data(), N, n, f, buf.data()));
+                                L.orb.push_back(((t * N + u) * N + v) * N + w);
+                                L.sgn.push_back((signed char)(s1 * s2 * s5));
+                                bit[w] = 0;
+                            }
+                            else s5 = -s5;
+                        }
+                        bit[v] = 0;
+                    }
+                    else s2 = -s2;
+                }
+                bit[u] = 1; s1 = -s1;
+            }
+            bit[t] = 1;
+        }
+        L.off[i + 1] = (long)L.ext.size();
+    }
+}
+// the singles E_xy (x occupied, y empty after removing x)
+static void rf_build_singles(rf_rep_list & L, int N, int n, int Ns, const int * vec, int * f){
+    std::vector<int> bit(N), buf(n + 2, 0);
+    L.off.assign(Ns + 1, 0); L.ext.clear(); L.orb.clear(); L.sgn.clear();
+    for(int i = 0; i < Ns; i++){
+        std::fill(bit.begin(), bit.end(), 0);
+        for(int k = 1; k < n + 1; k++) bit[vec[i * (n + 1) + k] - 1] = 1;
+        int s4 = 1;
+        for(int x = 0; x < N; x++) if(bit[x]){
+            bit[x] = 0; int s6 = 1;
+            for(int y = 0; y < N; y++){
+                if(!bit[y]){
+                    bit[y] = 1;
+                    L.ext.push_back(get_ind_from_ON(bit.data(), N, n, f, buf.data()));
+                    L.orb.push_back(x * N + y);
+                    L.sgn.push_back((signed char)(s4 * s6));
+                    bit[y] = 0;
+                }
+                else s6 = -s6;
+            }
+            bit[x] = 1; s4 = -s4;
+        }
+        L.off[i + 1] = (long)L.ext.size();
+    }
+}
+
+int res_fit_data::build_rep_lists(){
+    if(!dbl_a.off.empty()) return 0;
+    rf_build_doubles(dbl_a, n_a, ci->na, ci->Na, ci->vec_a, ci->fa);
+    rf_build_singles(sgl_b, n_a, ci->nb, ci->Nb, ci->vec_b, ci->fb);
+    rf_build_doubles(dbl_b, n_a, ci->nb, ci->Nb, ci->vec_b, ci->fb);
+    rf_build_singles(sgl_a, n_a, ci->na, ci->Na, ci->vec_a, ci->fa);
+    return 0;
+}
+
 int res_fit_calc_3body_AB(double * P, int n_s, int ld,
                           double * ci,
-                          int N,int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b,
+                          int N,int na, int nb, int Na, int Nb,
+                          const rf_rep_list & D, const rf_rep_list & S1,
                           double * RF, int * L_fit, int * S_fit, double * C_fit, int N_fit,
                           int i_th, int n_th, int f0, int nw){
+    // E_tu E_vw (alpha) E_xy (beta) on every determinant (i, j): the replacements come from the lists D (doubles of the outer strings) and S1 (singles
+    // of the inner strings), in the order of the former nested loops (t, u, v, w outer, x, y inner), so the sums are the same.
     // RF holds the grid points f0 .. f0 + nw - 1 (stride nw): a determinant none of whose stencils touches them is skipped
-    
-    int * bit_a = new int [N];
-    int * bit_b = new int [N];
-    int * buf = new int [na + 1];//more space for +a-b and -a+b
-    buf[0]=0;
-    
-    double sign ;
-    double sign1;
-    double sign2;
-    double sign3;
-    double sign4;
-    double sign5;
-    double sign6;
-    
-    
-    double Rc;
-    
-    double * R;
-    int L;
-    int S;
-    double * C;
-    double * CI_0;
-    double * CI_e;
-
-    //fprintf(stderr,"\n");
-    for (int i_CI = i_th; i_CI<Na; i_CI+=n_th)/// must be optimized!!!!!!!
-    for (int j_CI = 0; j_CI<Nb; j_CI++){//fprintf(stderr,"\r3b CI=%d/%d          \n",i_CI*Nb+j_CI,Na*Nb);
+    const long N2 = (long)N * N;
+    std::vector<int> Ss(n_s), k0s(n_s), k1s(n_s), live(n_s);
+    std::vector<const double *> Cs(n_s);
+    for (int i_CI = i_th; i_CI<Na; i_CI+=n_th)
+    for (int j_CI = 0; j_CI<Nb; j_CI++){
         {
             bool any=false;
             for(int i_s=0;i_s<n_s&&!any;i_s++){
@@ -675,87 +727,36 @@ int res_fit_calc_3body_AB(double * P, int n_s, int ld,
             }
             if(!any) continue;
         }
-//         getchar();
-
-        memset(bit_a,0,N*sizeof(int));
-        memset(bit_b,0,N*sizeof(int));
-        
-        for (int k=1; k<na+1; k++) bit_a[vec_a[i_CI*(na+1)+k]-1] = 1;
-        for (int k=1; k<nb+1; k++) bit_b[vec_b[j_CI*(nb+1)+k]-1] = 1;
-        
-        for(int t=0  ;t<N;t++){
-            if(bit_a[t]!=0){
-                bit_a[t]=0;
-                sign1=1;
-                for(int u=t+1;u<N;u++)if(bit_a[u]!=0){
-                    bit_a[u]=0;
-                    sign2=1;
-                    for(int v=0;v<N;v++){
-                        if(bit_a[v]==0){
-                            bit_a[v]=1;
-                            sign5=sign2;
-                            for(int w=v+1  ;w<N;w++){
-                                if(bit_a[w]==0){
-                                    bit_a[w]=1;
-                                    sign4=1;
-                                    for(int x=0  ;x<N;x++)if(bit_b[x]!=0){
-                                        bit_b[x]=0;
-                                        sign6=1;
-                                        for(int y=0  ;y<N;y++){
-                                            if(bit_b[y]==0){
-                                                bit_b[y]=1;
-                                                auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
-                                                auto j_CIext = get_ind_from_ON(bit_b, N, nb, fb, buf);
-                                                
-                                                sign=sign1*sign2*sign4*sign5*sign6;
-                                                
-                                                R = RF+(long)(((((t*N+u)*N+v)*N+w)*N+x)*N+y)*nw - f0;   // R[f] for f in the window
-                                                for(int i_s=0;i_s<n_s;i_s++){
-                                                    L = L_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    S = S_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    const int k0 = S<f0 ? f0-S : 0, k1 = S+L>f0+nw ? f0+nw-S : L;
-                                                    if(k0>=k1) continue;
-                                                    C = C_fit+(2*n_fit_pol+1)*((i_CI*Nb+j_CI)*n_s+i_s);
-                                                    Rc =0;
-                                                    for(int q=k0;q<k1;q++) Rc+=R[S+q]*C[q];
-                                                    CI_0 = ci+(i_CI*Nb+j_CI)*ld;
-                                                    Rc =Rc*CI_0[i_s]*sign;
-                                                    CI_e = ci+(i_CIext*Nb+j_CIext)*ld;
-                                                    for(int j_s=0;j_s<n_s;j_s++)
-                                                        P[i_s*n_s+j_s]+=Rc*CI_e[j_s];
-                                                }
-                                                bit_b[y]=0;
-                                                
-                                            }
-                                            else
-                                                sign6=-sign6;
-                                        }
-                                        bit_b[x]=1;
-                                        sign4=-sign4;
-                                    }
-                                    bit_a[w]=0;
-                                }
-                                else
-                                    sign5=-sign5;
-                            }
-                            bit_a[v]=0;
-                        }
-                        else
-                            sign2=-sign2;
-                    }
-                    bit_a[u]=1;
-                    sign1=-sign1;
+        const long det = (long)i_CI*Nb+j_CI;
+        const double * CI_0 = ci + det*ld;
+        // the stencils of this determinant clipped to the window, and the factors CI_0[i_s]
+        int ns_live = 0;
+        for(int i_s=0;i_s<n_s;i_s++){
+            const int L = L_fit[det*n_s+i_s], S = S_fit[det*n_s+i_s];
+            const int k0 = S<f0 ? f0-S : 0, k1 = S+L>f0+nw ? f0+nw-S : L;
+            if(k0>=k1) continue;
+            live[ns_live]=i_s; Ss[ns_live]=S; k0s[ns_live]=k0; k1s[ns_live]=k1; Cs[ns_live]=C_fit+(2*n_fit_pol+1)*(det*n_s+i_s); ns_live++;
+        }
+        for(long a = D.off[i_CI]; a < D.off[i_CI+1]; a++){
+            const long ia = D.ext[a];
+            const long oa = (long)D.orb[a]*N2;
+            const double sa = D.sgn[a];
+            for(long b = S1.off[j_CI]; b < S1.off[j_CI+1]; b++){
+                const double sign = sa*S1.sgn[b];
+                const double * R = RF + (oa + S1.orb[b])*nw - f0;   // R[f] for f in the window
+                const double * CI_e = ci + (ia*Nb + S1.ext[b])*ld;
+                for(int q=0;q<ns_live;q++){
+                    const int i_s=live[q], S=Ss[q];
+                    const double * C=Cs[q];
+                    double Rc=0;
+                    for(int l=k0s[q];l<k1s[q];l++) Rc+=R[S+l]*C[l];
+                    Rc=Rc*CI_0[i_s]*sign;
+                    for(int j_s=0;j_s<n_s;j_s++)
+                        P[i_s*n_s+j_s]+=Rc*CI_e[j_s];
                 }
-                bit_a[t]=1;
             }
         }
     }
-    
-    delete[] bit_b;
-    delete[] bit_a;
-    delete[] buf;
-
-    
     return 0;
 }
 
@@ -862,7 +863,7 @@ int res_fit_data::calc_3body_AAB(double * E2, int i_th, int n_th){
     
     res_fit_calc_3body_AB(E2, n_s, n_s,
                           ci->coef[0],
-                          n_a,ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b,
+                          n_a,ci->na, ci->nb, ci->Na, ci->Nb, dbl_a, sgl_b,
                           RF_P3_AB, L_fit, S_fit, C_fit, N_fit,
                           i_th, n_th, win_f0, win_nf);    
     
@@ -874,7 +875,7 @@ int res_fit_data::calc_3body_ABB(double * E2, int i_th, int n_th){
     
     res_fit_calc_3body_AB(E2, n_s, n_s,
                           ci->coef_bas[0],
-                          n_a,ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a,
+                          n_a,ci->nb, ci->na, ci->Nb, ci->Na, dbl_b, sgl_a,
                           RF_P3_AB, L_fit_tr, S_fit_tr, C_fit_tr, N_fit,
                           i_th, n_th, win_f0, win_nf);    
     
@@ -930,7 +931,7 @@ int res_fit_data::E2_windows(double ** E2_th, bool av, bool ca){
     const size_t n6 = (size_t)n_a*n_a*n_a*n_a*n_a*n_a;
     const int W = full_tables ? N_fit : window_points();
     std::vector<double> wJK, wAB;
-    double t_av = 0, t_ca = 0, t_3 = 0;
+    double t_av = 0, t_ca = 0, t_3 = 0, t_kind[4] = {0, 0, 0, 0};
     int n_win = 0;
     for(int f0 = 0; f0 < N_fit; f0 += W){
         win_f0 = f0; win_nf = (N_fit - f0 < W) ? N_fit - f0 : W;
@@ -947,15 +948,20 @@ int res_fit_data::E2_windows(double ** E2_th, bool av, bool ca){
         t_av += omp_get_wtime() - t0; t0 = omp_get_wtime();
         if(ca) calc_RF_2_CA();
         t_ca += omp_get_wtime() - t0; t0 = omp_get_wtime();
-        #pragma omp parallel
-        {
-            const int nt = omp_get_thread_num();
-            std::vector<double> E2_loc((size_t)n_s*n_s, 0.0);
-            calc_3body_AAA(E2_loc.data(), nt, num_threads);
-            calc_3body_AAB(E2_loc.data(), nt, num_threads);
-            calc_3body_ABB(E2_loc.data(), nt, num_threads);
-            calc_3body_BBB(E2_loc.data(), nt, num_threads);
-            for(int i = 0; i < n_s*n_s; i++) E2_th[nt][i] += E2_loc[i];
+        // the four kinds one after the other (each on all threads), timed separately
+        for(int kind = 0; kind < 4; kind++){
+            const double tk = omp_get_wtime();
+            #pragma omp parallel
+            {
+                const int nt = omp_get_thread_num();
+                std::vector<double> E2_loc((size_t)n_s*n_s, 0.0);
+                if(kind == 0) calc_3body_AAA(E2_loc.data(), nt, num_threads);
+                if(kind == 1) calc_3body_AAB(E2_loc.data(), nt, num_threads);
+                if(kind == 2) calc_3body_ABB(E2_loc.data(), nt, num_threads);
+                if(kind == 3) calc_3body_BBB(E2_loc.data(), nt, num_threads);
+                for(int i = 0; i < n_s*n_s; i++) E2_th[nt][i] += E2_loc[i];
+            }
+            t_kind[kind] += omp_get_wtime() - tk;
         }
         t_3 += omp_get_wtime() - t0;
         n_win++;
@@ -964,6 +970,7 @@ int res_fit_data::E2_windows(double ** E2_th, bool av, bool ca){
     win_f0 = 0; win_nf = N_fit;
     fprintf(out_stream, "AV and CA res tables and the 3-body PT operators in %d window(s) of up to %d grid points (%.0f MB per window): "
                         "AV %.2f s, CA %.2f s, 3-body %.2f s\n", n_win, W, 5.0*8.0*(double)n6*W/1048576.0, t_av, t_ca, t_3);
+    fprintf(out_stream, "3-body PT operators: AAA %.2f s, AAB %.2f s, ABB %.2f s, BBB %.2f s\n", t_kind[0], t_kind[1], t_kind[2], t_kind[3]);
     printf_timer("AV, CA res tables and 3-body PT operators");printf("\n");fflush(stdout);
     return 0;
 }

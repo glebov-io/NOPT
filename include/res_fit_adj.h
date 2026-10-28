@@ -10,6 +10,7 @@
 #include "common_vars.h"
 
 class res_fit_data;
+struct rf_rep_list;
 
 struct ResFitSeeds{
     std::vector<double> PS, PH, PV_JK, PV_AB, P3_JK, P3_AB;     // N_fit innermost
@@ -45,7 +46,7 @@ int res_fit_adj_1body(const double * W, int n_s, int ld, double * ci, int N, int
 int res_fit_adj_2body_AA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_2body_AB(const double * W, int n_s, int ld, double * ci, int N, int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
-int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
+int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, int Na, int Nb, const rf_rep_list & D, const rf_rep_list & S1, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 
 // All of E2_calc's contractions at once (the pair of coef / coef_bas variants).
 // with_3body = false leaves tables.P3_JK / P3_AB empty (the CI and grid derivatives still include the three-body terms); their seeds then come

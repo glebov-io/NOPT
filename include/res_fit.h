@@ -7,6 +7,16 @@
 
 class res_fit_data;
 
+// Replacement lists of the strings of one spin (CSR over the strings): for every string the strings E_tu E_vw (two electrons, t < u removed,
+// v < w added) or E_xy (one electron) lead to, with their sign and the orbital part of the table index, in the order the contraction loops of
+// res_fit.cpp enumerate them.
+struct rf_rep_list{
+    std::vector<long> off;      // entries of string i: off[i] .. off[i+1]-1
+    std::vector<int> ext;       // the new string
+    std::vector<int> orb;       // ((t N + u) N + v) N + w for the doubles, x N + y for the singles
+    std::vector<signed char> sgn;
+};
+
 class res_fit_data 
 {
     public:
@@ -57,6 +67,9 @@ class res_fit_data
         int win_f0 = 0, win_nf = 0;
         // strings ordered so that the start of the interpolation stencil grows along them for every other string and state (E_act = Ea + Eb)
         std::vector<int> order_b, order_a;
+        // replacement lists for the alpha-beta three-body terms: alpha doubles / beta singles (AAB) and beta doubles / alpha singles (ABB)
+        rf_rep_list dbl_a, sgl_b, dbl_b, sgl_a;
+        int build_rep_lists();
         // the windowed part of E2_calc: AV, CA and the three-body contraction for every window
         int E2_windows(double ** E2_th, bool av, bool ca);
         // grid points per window for the memory bound NOPT_XMC_WINDOW_MB (default 4096 MB for the five window-sized arrays)
