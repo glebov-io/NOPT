@@ -45,7 +45,7 @@ int res_fit_adj_0body(const double * W, int n_s, int ld, double * ci, int Na, in
 int res_fit_adj_1body(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_2body_AA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_2body_AB(const double * W, int n_s, int ld, double * ci, int N, int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
-int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
+int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th, const int * order = nullptr);
 int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, int Na, int Nb, const rf_rep_list & D, const rf_rep_list & S1, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 
 // All of E2_calc's contractions at once (the pair of coef / coef_bas variants).
