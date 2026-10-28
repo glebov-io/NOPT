@@ -55,6 +55,26 @@ A. V. Bochenkova, J. Chem. Theory Comput. 2026, 22, 8767 (SI Table S3).
 
 Without the option the run is identical to the code before this change, line for line in the RHF and CAS-SCF iterations.
 
+`guanine_ss4.inp` is the same molecule with the orbitals optimized for the ground state alone (`w_state=1 0 0 0`) and
+four roots computed on them:
+
+| | S^2 of the four roots | energies on the S0 orbitals (Eh) |
+|---|---|---|
+| without the option | 0.00 2.00 2.00 0.00 | -539.5543, -539.3319, -539.2909, -539.2109 |
+| `$dav spin_proj=1` (`guanine_ss4.log`) | 0.00 0.00 0.00 0.00 | -539.5543, -539.2109, -539.1528, -539.0779 |
+
+S0 is the same in both runs and equal to a one-root CASSCF of S0 (-539.55425). Here only the excited roots change:
+without the option two of the first three excited roots are triplets.
+
+S0 of a state-averaged CASSCF lies above this value, because the orbitals are a compromise for the whole
+ensemble. How far above depends on the ensemble: 39.8 mEh with the three excited singlets (`guanine_sa4.inp` with the
+option), 33.0 mEh with the three triplets that the unprojected run averages over instead. The unprojected ensemble also
+depends on the Davidson thresholds: with `$dav dE=1e-14 dR=1e-16` (run `gu_s1_m0_noproj` of tests/spin_proj, which
+also has its own CASSCF thresholds) the unprojected SA-4 averages S0, two triplets and one singlet (S^2 = 0 2 2 0, S0 at
+-539.5338). With the option the ensemble is the four lowest singlets whatever the
+thresholds. The unprojected SS run with these tight thresholds stopped after 250 Davidson iterations without
+convergence; the projected one converges.
+
 ## Tests
 
 `tests/spin_proj/run_tests.py` (about 6 minutes; `--quick`, without guanine, about 2) checks the algebra of the
