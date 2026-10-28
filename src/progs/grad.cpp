@@ -17,6 +17,7 @@
 #include "inp_par_read.h"
 #include "inp_out.h"
 #include "common_vars.h"
+#include "timer.h"
 #include "nopt_libint_engines.h"
 #include "QM_calc.h"
 #include "integral_derivatives.h"
@@ -33,6 +34,7 @@
 
 int main(int argc, char ** argv){
     out_stream = stdout;
+    get_start_time();     // the "Full time" of the timers, as run_sQM sets it
     nQM = 0;
     molecule M;
     char * P_name = nullptr;
