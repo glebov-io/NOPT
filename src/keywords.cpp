@@ -472,6 +472,14 @@ vector<const char *>cdas_fit_en_kw{{"use_firefly_fit_energy"}};
                                    
 vector<const char *>cdas_rot_orbs{{"rotate"}};
 
+vector<const char *>cdas_mode_kw{{"cdas_mode"}};
+
+vector<const char *>cdas_skip_gno_scalar_kw{{"skip_gno_scalar"}};
+
+vector<const char *>cdas_m_delta_kw{{"m_delta"}};
+
+vector<const char *>cdas_m_cdas_kw{{"m_cdas"}};
+
 vector<const char *>dsrg_kw{{"dsrg"}};
 
 vector<const char *>dsrg_group_start{{"$dsrg"}};

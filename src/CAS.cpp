@@ -1541,6 +1541,7 @@ int CAS_SCF(molecule * M, cas_par * cas, char * job_name){
         n_iter++;
 //         PrintMatr(M->nat_orb_occ,M->n_act_orb[0],1,1);
     }
+    CAS->scf_exit = converged;
     enable_print_timers();
     set_zero_matr(M->orb_energy,M->n_ao);
     

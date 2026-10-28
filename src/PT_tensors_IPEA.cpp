@@ -10,6 +10,7 @@
 # include "aldet.h"
 # include "RI.h"
 # include "PT_tensors.h"
+# include "ipea_matrices.h"
 
 // #include "backup_and_old_versions/aldet_Nbody_operators.cpp"
 
@@ -351,6 +352,33 @@ int PT_tensors::IPEA(casci_solver * I, std::vector<double> avecoe){
     I->calc_IPEA_single(IP_U, IP_H, EA_U, EA_H, 0 ,avecoe);
     
     
+    IPEA_solve(IP_H, EA_H);
+    
+    delete[] IP_H   ;
+    delete[] EA_H   ;
+    
+    return 0;
+    
+}
+
+int PT_tensors::IPEA(const double * g1, const double * g2,
+                     const double * gamma, const double * GAMMA){
+    
+    std::vector<double> IP_H(n_a*n_a);
+    std::vector<double> EA_H(n_a*n_a);
+    
+    ipea_matrices(n_a, g1, g2, gamma, GAMMA, IP_U, IP_H.data(), EA_U, EA_H.data());
+    
+    printf_timer("calculation of IPEA matrices");
+    
+    IPEA_solve(IP_H.data(), EA_H.data());
+    
+    return 0;
+    
+}
+
+int PT_tensors::IPEA_solve(double * IP_H, double * EA_H){
+    
     symmetrization(IP_H   , n_a);
     symmetrization(EA_H   , n_a);
     
@@ -372,9 +400,6 @@ int PT_tensors::IPEA(casci_solver * I, std::vector<double> avecoe){
     fPrintMatr(out_stream, EA_U,n_a,n_a,0);
     
 
-    delete[] IP_H   ;
-    delete[] EA_H   ;
-    
     return 0;
     
 }

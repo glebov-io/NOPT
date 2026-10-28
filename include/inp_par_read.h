@@ -85,6 +85,9 @@ enum dsrg_ccvv_src_kind { DSRG_CCVV_SRC_UNKNOWN = -1, DSRG_CCVV_SRC_NORMAL = 0, 
 // $DSRG group — reference relaxation level (dsrg_par::read_line).
 enum dsrg_relax_kind { DSRG_RELAX_UNKNOWN = -1, DSRG_RELAX_NONE = 0, DSRG_RELAX_ONCE = 1 };
 
+// $CDAS group — CDAS flow the run takes (cdas_par::read_line).
+enum cdas_mode_kind { CDAS_MODE_UNKNOWN = -1, CDAS_MODE_NATIVE = 0, CDAS_MODE_TRUNC_GNO = 1, CDAS_MODE_DELTA_GNO = 2 };
+
 class dmrg_par // settings for the DMRG (block2) CI backend; see $DMRG group
 {
     public:
@@ -270,6 +273,22 @@ class xmc_par
     
 };
 
+class gno_par             // settings of the GNO modes (trunc_gno, delta_gno); read in the $CDAS group
+{
+    public:
+        int mode;          // cdas_mode_kind, set by $CDAS cdas_mode=
+        int skip_scalar;   // set by $CDAS skip_gno_scalar=; 1 leaves F0 out, -1 = the mode's default
+        int m_delta;       // set by $CDAS m_delta=; branch bond dimension of delta_gno
+        int sweeps_branch; // branch sweep budget, resolved from $DMRG sweeps
+        double dav_branch; // branch Davidson threshold, resolved from $DMRG sweep_tol
+
+        gno_par();
+        bool on() const;       // true in the two GNO modes; exits on a mode it does not know
+        int write_info();
+        ~gno_par();
+
+};
+
 class cdas_par
 {
     public:
@@ -294,6 +313,10 @@ class cdas_par
         int n_orb;
         int rotate_orbs;
         int pt1_d;
+        int m_cdas;        // set by $CDAS m_cdas=; PT-stage bond dimension in cdas_mode=native
+        bool m_cdas_set;   // user gave m_cdas; otherwise the PT stage runs at $DMRG m
+
+        gno_par gno;
 
         cdas_par();
         int read_group(char * inp, cas_par * ext_cas);
