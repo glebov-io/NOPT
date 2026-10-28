@@ -883,20 +883,52 @@ int res_fit_data::calc_3body_ABB(double * E2, int i_th, int n_th){
 }
 
 
+bool res_fit_data::block_used(const char * b){
+    const char * blk = getenv("NOPT_XMC_BLOCKS");
+    if(!(blk && *blk)) return true;
+    const size_t lb = strlen(b);
+    for(const char * p = blk; *p; ){
+        const char * q = strchr(p, ','); const size_t l = q ? (size_t)(q - p) : strlen(p);
+        if(l == lb && !strncmp(p, b, lb)) return true;
+        if(!q) break; p = q + 1;
+    }
+    return false;
+}
+
+int res_fit_data::window_points() const {
+    // per grid point: the windows of the two three-body tables and the three AV intermediates of the same size
+    const double n6 = (double)n_a*n_a*n_a*n_a*n_a*n_a;
+    double mb = 4096.0;
+    if(getenv("NOPT_XMC_WINDOW_MB") && *getenv("NOPT_XMC_WINDOW_MB")) mb = atof(getenv("NOPT_XMC_WINDOW_MB"));
+    int W = (int)(mb * 1048576.0 / (5.0 * 8.0 * n6));
+    if(W < 1) W = 1;
+    if(W > N_fit) W = N_fit;
+    return W;
+}
+
+int res_fit_data::build_P3_window(int f0, int nw, double * JK, double * AB){
+    const size_t n2 = (size_t)n_a*n_a, n4 = n2*n2, n6 = n4*n2;
+    std::vector<double> sPS(N_fit, 0.0), sPH(n2*N_fit, 0.0), sPVJ(n4*N_fit, 0.0), sPVA(n4*N_fit, 0.0);
+    double * keep[4] = {RF_PS, RF_PH, RF_PV_JK, RF_PV_AB};
+    double * keep3[2] = {RF_P3_JK, RF_P3_AB};
+    RF_PS = sPS.data(); RF_PH = sPH.data(); RF_PV_JK = sPVJ.data(); RF_PV_AB = sPVA.data();
+    std::fill(JK, JK + n6*nw, 0.0); std::fill(AB, AB + n6*nw, 0.0);
+    RF_P3_JK = JK; RF_P3_AB = AB;
+    win_f0 = f0; win_nf = nw;
+    if(block_used("AV")) calc_RF_2_AV();
+    if(block_used("CA")) calc_RF_2_CA();
+    win_f0 = 0; win_nf = N_fit;
+    RF_PS = keep[0]; RF_PH = keep[1]; RF_PV_JK = keep[2]; RF_PV_AB = keep[3];
+    RF_P3_JK = keep3[0]; RF_P3_AB = keep3[1];
+    return 0;
+}
+
 int res_fit_data::E2_windows(double ** E2_th, bool av, bool ca){
     // AV and CA build the three-body tables (and add to the four-index ones); the three-body contraction reads them. All of it is pointwise in the
     // grid, so it runs window by window: only the window of the two three-body tables and the AV intermediates (three more of the same size)
     // exist at a time. With full_tables a single window covers the grid and the tables stay.
     const size_t n6 = (size_t)n_a*n_a*n_a*n_a*n_a*n_a;
-    int W = N_fit;
-    if(!full_tables){
-        double mb = 4096.0;
-        if(getenv("NOPT_XMC_WINDOW_MB") && *getenv("NOPT_XMC_WINDOW_MB")) mb = atof(getenv("NOPT_XMC_WINDOW_MB"));
-        const double per_point = 5.0 * 8.0 * (double)n6;
-        W = (int)(mb * 1048576.0 / per_point);
-        if(W < 1) W = 1;
-        if(W > N_fit) W = N_fit;
-    }
+    const int W = full_tables ? N_fit : window_points();
     std::vector<double> wJK, wAB;
     double t_av = 0, t_ca = 0, t_3 = 0;
     int n_win = 0;
@@ -947,16 +979,7 @@ int res_fit_data::E2_calc(double * E2){
     
     // test switch: NOPT_XMC_BLOCKS=CCVV,CV,... keeps only the listed classes (exact names, comma separated; default: all eight)
     const char * blk = getenv("NOPT_XMC_BLOCKS");
-    auto use = [&](const char * b){
-        if(!(blk && *blk)) return true;
-        const size_t lb = strlen(b);
-        for(const char * p = blk; *p; ){
-            const char * q = strchr(p, ','); const size_t l = q ? (size_t)(q - p) : strlen(p);
-            if(l == lb && !strncmp(p, b, lb)) return true;
-            if(!q) break; p = q + 1;
-        }
-        return false;
-    };
+    auto use = [](const char * b){ return block_used(b); };
     if(blk && *blk) fprintf(out_stream, "TEST: XMC PT classes restricted to %s\n", blk);
     if(use("CCVV")){calc_RF_2_CCVV();printf_timer("CCVV res table");printf("\n");fflush(stdout);}
     if(use("CAVV")){calc_RF_2_CAVV();printf_timer("CAVV res table");printf("\n");fflush(stdout);}

@@ -59,6 +59,13 @@ class res_fit_data
         std::vector<int> order_b, order_a;
         // the windowed part of E2_calc: AV, CA and the three-body contraction for every window
         int E2_windows(double ** E2_th, bool av, bool ca);
+        // grid points per window for the memory bound NOPT_XMC_WINDOW_MB (default 4096 MB for the five window-sized arrays)
+        int window_points() const;
+        // NOPT_XMC_BLOCKS (test switch): is this PT class used
+        static bool block_used(const char * b);
+        // the three-body tables at the grid points f0 .. f0 + nw - 1 into JK, AB (n_a^6 x nw each), as E2_calc builds them; the contributions of AV and CA
+        // to the four-index tables, which E2_calc already added, go to scratch copies (the analytic gradient rebuilds the windows it needs)
+        int build_P3_window(int f0, int nw, double * JK, double * AB);
         
         
         //functions

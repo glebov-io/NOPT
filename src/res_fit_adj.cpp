@@ -42,12 +42,20 @@ inline void adj_term(const ResFitAdjOut & o, size_t idx, int n_s, const double *
             }
         }
         if(o.Rfwd && (o.cibar || o.Cbar)){
+            // the stencil points in the forward window: R(l) = Rfwd[base + S + l] for l in [l0, l1)
+            int l0 = 0, l1 = L;
+            long base = (long)row;
+            if(o.rnb > 0){
+                base = (long)idx * o.rnb - o.rf0;
+                l0 = S < o.rf0 ? o.rf0 - S : 0; l1 = S + L > o.rf0 + o.rnb ? o.rf0 + o.rnb - S : L;
+                if(l0 >= l1) continue;
+            }
             double Rc = 0.0;
-            for(int l = 0; l < L; l++) Rc += o.Rfwd[row + S + l] * C[l];
+            for(int l = l0; l < l1; l++) Rc += o.Rfwd[base + S + l] * C[l];
             if(o.Cbar){
-                for(int l = 0; l < L; l++){
+                for(int l = l0; l < l1; l++){
 #pragma omp atomic
-                    o.Cbar[(size_t)np1 * (det * n_s + i_s) + l] += coef * o.Rfwd[row + S + l];
+                    o.Cbar[(size_t)np1 * (det * n_s + i_s) + l] += coef * o.Rfwd[base + S + l];
                 }
             }
             if(o.cibar){
@@ -62,6 +70,21 @@ inline void adj_term(const ResFitAdjOut & o, size_t idx, int n_s, const double *
             }
         }
     }
+}
+}
+
+namespace{
+// false if no interpolation stencil of the determinant reaches the window of the call (the window of Rfwd, or of Rbar when that is not the whole grid)
+inline bool det_in_window(const ResFitAdjOut & o, int det, int n_s, const int * L_fit, const int * S_fit){
+    int lo, hi;
+    if(o.rnb > 0){ lo = o.rf0; hi = o.rf0 + o.rnb; }
+    else if(o.Rbar && o.nb < o.Nf){ lo = o.f0; hi = o.f0 + o.nb; }
+    else return true;
+    for(int i_s = 0; i_s < n_s; i_s++){
+        const int S = S_fit[det * n_s + i_s], L = L_fit[det * n_s + i_s];
+        if(S < hi && S + L > lo) return true;
+    }
+    return false;
 }
 }
 
@@ -235,8 +258,10 @@ int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N,
                                             auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                                             sign = sign1 * sign2 * sign3 * sign4;
                                             const size_t R = (size_t)(((((t * N + u) * N + v) * N + y) * N + x) * N + w);
-                                            for(int j_CI = 0; j_CI < Nb; j_CI++)
+                                            for(int j_CI = 0; j_CI < Nb; j_CI++){
+                                                if(!det_in_window(o, i_CI * Nb + j_CI, n_s, L_fit, S_fit)) continue;
                                                 adj_term(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
+                                            }
                                             bit_a[x] = 0;
                                             bit_a[y] = 0;
                                         }
@@ -273,6 +298,7 @@ int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, 
     double sign, sign1, sign2, sign4, sign5, sign6;
     for(int i_CI = i_th; i_CI < Na; i_CI += n_th)
     for(int j_CI = 0; j_CI < Nb; j_CI++){
+        if(!det_in_window(o, i_CI * Nb + j_CI, n_s, L_fit, S_fit)) continue;
         memset(bit_a, 0, N * sizeof(int));
         memset(bit_b, 0, N * sizeof(int));
         for(int k = 1; k < na + 1; k++) bit_a[vec_a[i_CI * (na + 1) + k] - 1] = 1;
@@ -363,6 +389,9 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
         return o;
     };
     double * P3J = with_3body ? S.P3_JK.data() : nullptr, * P3A = with_3body ? S.P3_AB.data() : nullptr;
+    // E2_calc built and dropped the three-body tables window by window: their CI and grid derivatives follow below, window by window again
+    const bool fwd_windows = (RF.RF_P3_JK == nullptr);
+    if(fwd_windows && with_3body){ fprintf(out_stream, "ERROR: res_fit_E2_adjoint: the three-body table seeds need the whole tables\n"); return 1; }
     const ResFitAdjOut o0 = out(S.PS.data(), RF.RF_PS, false), o1 = out(S.PH.data(), RF.RF_PH, false), o1t = out(S.PH.data(), RF.RF_PH, true),
                        o2a = out(S.PV_AB.data(), RF.RF_PV_AB, false), o2j = out(S.PV_JK.data(), RF.RF_PV_JK, false), o2jt = out(S.PV_JK.data(), RF.RF_PV_JK, true),
                        o3j = out(P3J, RF.RF_P3_JK, false), o3jt = out(P3J, RF.RF_P3_JK, true), o3a = out(P3A, RF.RF_P3_AB, false), o3at = out(P3A, RF.RF_P3_AB, true);
@@ -373,13 +402,33 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
         res_fit_adj_2body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, o2a, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
         res_fit_adj_2body_AA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, o2j, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
         res_fit_adj_2body_AA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, o2jt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
-        if(with_3body || want_ci_and_grid){
+        if(with_3body || (want_ci_and_grid && !fwd_windows)){
             res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, o3j, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
             res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, o3jt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
             res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, o3a, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
             res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a, o3at, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
         }
     });
+    if(want_ci_and_grid && fwd_windows){
+        const int Wn = RF.window_points();
+        std::vector<double> JK, AB;
+        int n_win = 0;
+        for(int f0 = 0; f0 < Nf; f0 += Wn){
+            const int nw = (Nf - f0 < Wn) ? Nf - f0 : Wn;
+            JK.resize(n6 * nw); AB.resize(n6 * nw);
+            RF.build_P3_window(f0, nw, JK.data(), AB.data());
+            ResFitAdjOut wj = out(nullptr, JK.data(), false), wjt = out(nullptr, JK.data(), true), wa = out(nullptr, AB.data(), false), wat = out(nullptr, AB.data(), true);
+            for(ResFitAdjOut * w : {&wj, &wjt, &wa, &wat}){ w->rf0 = f0; w->rnb = nw; }
+            on_threads([&](int it, int nt){
+                res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, wj, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+                res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, wjt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+                res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b, wa, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+                res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a, wat, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+            });
+            n_win++;
+        }
+        fprintf(out_stream, "XMC gradient: three-body tables rebuilt in %d window(s) of up to %d grid points for the CI and grid derivatives\n", n_win, Wn);
+    }
     if(!want_ci_and_grid) return 0;
 
     // fold the beta variants: coef_bas[b*Na + a, s] = coef[a*Nb + b, s]

@@ -174,8 +174,10 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
     std::vector<double> gbar_grid(Nf, 0.0);
     std::vector<double> PH(a2), PVJ(a4), PVA(a4), P3J(a6), P3A(a6);
     // the seeds of the two three-body tables (n_a^6 x N_fit each) are built for a window of grid points at a time: NOPT_XMC_ADJ_MB bounds the
-    // window (default 4096 MB for the pair); every window repeats the three-body contraction loops
+    // window (for the pair; default the budget of the windows of the energy, NOPT_XMC_WINDOW_MB, 4096 MB); every window repeats the three-body
+    // contraction loops
     double adj_mb = 4096.0;
+    if(getenv("NOPT_XMC_WINDOW_MB") && *getenv("NOPT_XMC_WINDOW_MB")) adj_mb = std::max(1.0, atof(getenv("NOPT_XMC_WINDOW_MB")));
     if(getenv("NOPT_XMC_ADJ_MB") && *getenv("NOPT_XMC_ADJ_MB")) adj_mb = std::max(1.0, atof(getenv("NOPT_XMC_ADJ_MB")));
     const int win = (int)std::max(1.0, std::min((double)Nf, adj_mb * 1048576.0 / (2.0 * 8.0 * (double)a6)));
     std::vector<double> w3J, w3A;
@@ -216,7 +218,7 @@ int xmc_grad_main(molecule * M, xmc_par * xmc, doCI_data & D, res_fit_data & RF,
             double tmax = std::fabs(RF.RF_PS[f]);
             for(size_t i = 0; i < a2; i++) tmax = std::max(tmax, std::fabs(RF.RF_PH[i * Nf + f]));
             for(size_t i = 0; i < a4; i++) tmax = std::max(tmax, std::max(std::fabs(RF.RF_PV_JK[i * Nf + f]), std::fabs(RF.RF_PV_AB[i * Nf + f])));
-            for(size_t i = 0; i < a6; i++) tmax = std::max(tmax, std::max(std::fabs(RF.RF_P3_JK[i * Nf + f]), std::fabs(RF.RF_P3_AB[i * Nf + f])));
+            if(RF.RF_P3_JK) for(size_t i = 0; i < a6; i++) tmax = std::max(tmax, std::max(std::fabs(RF.RF_P3_JK[i * Nf + f]), std::fabs(RF.RF_P3_AB[i * Nf + f])));
             fprintf(out_stream, "XMC DEBUG grid %2d E_fit % .6f  max|table| %.3e  max|seed| %.3e\n", f, RF.E_fit[f], tmax, mx);
         }
         if(mx == 0.0) continue;

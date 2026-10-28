@@ -493,9 +493,9 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     fflush(out_stream);
     res_fit_data RF;//resolvent fitting
     RF.set_par(&(D.aldet), E0, n_s, &RI, eps, n_cor, n_act, n_virt, H_AV, H_CA, H_CV, xmc->edshift);
-    // the three-body tables stay whole when something reads them after E2_calc (the analytic gradient, the self-tests) or on request;
-    // otherwise E2_calc builds and contracts them window by window (NOPT_XMC_WINDOW_MB)
-    RF.full_tables = (g_xmc_grad.root>=0) || (getenv("NOPT_XMC_VJP_TEST")&&*getenv("NOPT_XMC_VJP_TEST")) || (getenv("NOPT_XMC_ADJ_TEST")&&*getenv("NOPT_XMC_ADJ_TEST"))
+    // the three-body tables stay whole when the self-tests read them after E2_calc, or on request; otherwise E2_calc builds and contracts them window
+    // by window (NOPT_XMC_WINDOW_MB), and the analytic gradient rebuilds the windows it needs
+    RF.full_tables = (getenv("NOPT_XMC_VJP_TEST")&&*getenv("NOPT_XMC_VJP_TEST")) || (getenv("NOPT_XMC_ADJ_TEST")&&*getenv("NOPT_XMC_ADJ_TEST"))
                      || (getenv("NOPT_XMC_FULL_TABLES")&&*getenv("NOPT_XMC_FULL_TABLES"));
     RF.gen_grid(xmc->n_fit, xmc->n_fit_pol);
     if(getenv("NOPT_XMC_VJP_TEST")&&*getenv("NOPT_XMC_VJP_TEST")){

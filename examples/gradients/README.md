@@ -72,6 +72,20 @@ The differences are the O(h^2) error of the numerical gradient, not of the analy
 Memory: about two extra arrays of n_ao^2 x n_aux on top of the energy (C4H6 1.4 GB vs 0.5 GB, naphthalene 1.6 GB vs 0.7 GB; the timing lines
 print the peak).
 
+**Memory of the three-body resolvent tables.** XMCQDPT2 keeps two tables of n_act^6 x N_fit elements, and builds them with three more of
+the same size (7.2 GB each for 12 active orbitals and 300 grid points). Energy and gradient build and use them in windows of the grid;
+`NOPT_XMC_WINDOW_MB` (default 4096) bounds the five window-sized arrays, and the seeds of the gradient (`NOPT_XMC_ADJ_MB`, default the same).
+The results do not depend on the windows (to 1e-12 Eh, 1e-13 Eh/bohr). Windows of about 25 grid points or more cost no time; narrower ones
+repeat the three-body contraction and slow it down.
+
+| run | whole tables | windows (MB) | peak memory | time |
+|---|---|---|---|---|
+| guanine CAS(10,10) SA-4, energy | 12.7 GB | 4096 / 1000 | 5.3 / 2.2 GB | same / same |
+| indole SA-4 (12o,8e), energy | 36.1 GB | 4096 / 2000 | 5.8 / 3.7 GB | +2% / +4% |
+| guanine, gradient of root 0 | 12.7 GB | 1000 | 2.6 GB | +10% |
+
+`NOPT_XMC_FULL_TABLES=1` keeps the whole tables (as the self-tests `NOPT_XMC_VJP_TEST`, `NOPT_XMC_ADJ_TEST` do).
+
 ## Pitfalls
 
 1. **Converge the CAS-SCF tightly.** The gradient assumes a stationary CAS-SCF; its error is linear in the remaining orbital gradient.
