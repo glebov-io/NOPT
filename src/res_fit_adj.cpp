@@ -88,6 +88,53 @@ inline bool det_in_window(const ResFitAdjOut & o, int det, int n_s, const int * 
 }
 }
 
+namespace{
+// The window path of the CI and grid derivatives (o.Rbar null, forward window rf0/rnb): adj_term with the parts that belong to the determinant
+// of CI_0 summed in the caller's per-determinant accumulators (cacc: weight seeds [i_s*np1 + l], c0: CI seeds [i_s]; the calling thread owns
+// the determinant and flushes them with adj_flush), and the CI seeds of CI_e summed over the states before the atomic update.
+inline void adj_term_acc(const ResFitAdjOut & o, size_t idx, int n_s, const double * W, const double * ci, const double * CI_0, const double * CI_e,
+                         double sign, int det, const int * L_fit, const int * S_fit, const double * C_fit, double * cacc, double * c0, double * ve){
+    const int np1 = 2 * n_fit_pol + 1;
+    const long base = (long)idx * o.rnb - o.rf0;
+    bool any = false;
+    for(int j = 0; j < n_s; j++) ve[j] = 0.0;
+    for(int i_s = 0; i_s < n_s; i_s++){
+        const int L = L_fit[det * n_s + i_s], S = S_fit[det * n_s + i_s];
+        const int l0 = S < o.rf0 ? o.rf0 - S : 0, l1 = S + L > o.rf0 + o.rnb ? o.rf0 + o.rnb - S : L;
+        if(l0 >= l1) continue;
+        double we = 0.0;
+        for(int j = 0; j < n_s; j++) we += W[i_s * n_s + j] * CI_e[j];
+        const double * C = C_fit + (size_t)np1 * (det * n_s + i_s);
+        const double * R = o.Rfwd + base + S;
+        const double coef = sign * CI_0[i_s] * we;
+        double Rc = 0.0;
+        for(int l = l0; l < l1; l++){ Rc += R[l] * C[l]; cacc[i_s * np1 + l] += coef * R[l]; }
+        c0[i_s] += Rc * sign * we;
+        const double r0 = Rc * sign * CI_0[i_s];
+        for(int j = 0; j < n_s; j++) ve[j] += r0 * W[i_s * n_s + j];
+        any = true;
+    }
+    if(!any) return;
+    double * cbe = o.cibar + (CI_e - ci);
+    for(int j = 0; j < n_s; j++){
+#pragma omp atomic
+        cbe[j] += ve[j];
+    }
+}
+// adds the accumulators of determinant det (owned by the calling thread) and clears them
+inline void adj_flush(const ResFitAdjOut & o, int n_s, int ld, size_t det, double * cacc, double * c0){
+    const int np1 = 2 * n_fit_pol + 1;
+    double * Cb = o.Cbar + (size_t)np1 * det * n_s;
+    for(int k = 0; k < n_s * np1; k++){ Cb[k] += cacc[k]; cacc[k] = 0.0; }
+    double * cb0 = o.cibar + det * ld;
+    for(int i_s = 0; i_s < n_s; i_s++){
+#pragma omp atomic
+        cb0[i_s] += c0[i_s];
+        c0[i_s] = 0.0;
+    }
+}
+}
+
 int res_fit_adj_0body(const double * W, int n_s, int ld, double * ci, int Na, int Nb, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th){
     for(int i_CI = i_th; i_CI < Na; i_CI += n_th)
     for(int j_CI = 0; j_CI < Nb; j_CI++){
@@ -233,6 +280,10 @@ int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N,
     int * buf = new int[na + 1];
     buf[0] = 0;
     double sign, sign1, sign2, sign3, sign4;
+    // the window path: per-determinant accumulators for the beta strings of the current alpha string (see adj_term_acc)
+    const bool acc = !o.Rbar && o.rnb > 0 && o.cibar && o.Cbar;
+    const int np1 = 2 * n_fit_pol + 1;
+    std::vector<double> cacc(acc ? (size_t)Nb * n_s * np1 : 0, 0.0), c0(acc ? (size_t)Nb * n_s : 0, 0.0), ve(n_s);
     for(int i_CI = i_th; i_CI < Na; i_CI += n_th){
         memset(bit_a, 0, N * sizeof(int));
         for(int k = 1; k < na + 1; k++) bit_a[vec_a[i_CI * (na + 1) + k] - 1] = 1;
@@ -258,6 +309,12 @@ int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N,
                                             auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                                             sign = sign1 * sign2 * sign3 * sign4;
                                             const size_t R = (size_t)(((((t * N + u) * N + v) * N + y) * N + x) * N + w);
+                                            if(acc){
+                                                for(int j_CI = 0; j_CI < Nb; j_CI++)
+                                                    adj_term_acc(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI,
+                                                                 L_fit, S_fit, C_fit, &cacc[(size_t)j_CI * n_s * np1], &c0[(size_t)j_CI * n_s], ve.data());
+                                            }
+                                            else
                                             for(int j_CI = 0; j_CI < Nb; j_CI++){
                                                 if(!det_in_window(o, i_CI * Nb + j_CI, n_s, L_fit, S_fit)) continue;
                                                 adj_term(o, R, n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + (i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
@@ -283,6 +340,8 @@ int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N,
                 bit_a[t] = 1;
             }
         }
+        if(acc)
+            for(int j_CI = 0; j_CI < Nb; j_CI++) adj_flush(o, n_s, ld, (size_t)i_CI * Nb + j_CI, &cacc[(size_t)j_CI * n_s * np1], &c0[(size_t)j_CI * n_s]);
     }
     delete[] bit_a;
     delete[] buf;
@@ -293,15 +352,23 @@ int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, 
                          const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th){
     // the terms of res_fit_calc_3body_AB, from the replacement lists (alpha doubles D of the outer strings, beta singles S1 of the inner ones)
     const size_t N2 = (size_t)N * N;
+    const bool acc = !o.Rbar && o.rnb > 0 && o.cibar && o.Cbar;    // the window path, see adj_term_acc
+    const int np1 = 2 * n_fit_pol + 1;
+    std::vector<double> cacc((size_t)n_s * np1, 0.0), c0(n_s, 0.0), ve(n_s);
     for(int i_CI = i_th; i_CI < Na; i_CI += n_th)
     for(int j_CI = 0; j_CI < Nb; j_CI++){
         if(!det_in_window(o, i_CI * Nb + j_CI, n_s, L_fit, S_fit)) continue;
+        const int det = i_CI * Nb + j_CI;
         for(long a = D.off[i_CI]; a < D.off[i_CI + 1]; a++){
             const size_t oa = (size_t)D.orb[a] * N2;
-            for(long b = S1.off[j_CI]; b < S1.off[j_CI + 1]; b++)
-                adj_term(o, oa + S1.orb[b], n_s, W, ci, ci + (i_CI * Nb + j_CI) * ld, ci + ((long)D.ext[a] * Nb + S1.ext[b]) * ld, (double)(D.sgn[a] * S1.sgn[b]),
-                         i_CI * Nb + j_CI, L_fit, S_fit, C_fit);
+            const double * CI_x = ci + (long)D.ext[a] * Nb * ld;
+            for(long b = S1.off[j_CI]; b < S1.off[j_CI + 1]; b++){
+                const double sign = (double)(D.sgn[a] * S1.sgn[b]);
+                if(acc) adj_term_acc(o, oa + S1.orb[b], n_s, W, ci, ci + (long)det * ld, CI_x + (long)S1.ext[b] * ld, sign, det, L_fit, S_fit, C_fit, cacc.data(), c0.data(), ve.data());
+                else adj_term(o, oa + S1.orb[b], n_s, W, ci, ci + (long)det * ld, CI_x + (long)S1.ext[b] * ld, sign, det, L_fit, S_fit, C_fit);
+            }
         }
+        if(acc) adj_flush(o, n_s, ld, det, cacc.data(), c0.data());
     }
     return 0;
 }
@@ -360,7 +427,7 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
     });
     t_main = omp_get_wtime() - t_main;
     if(want_ci_and_grid && fwd_windows){
-        double t_build = 0, t_adj = 0;
+        double t_build = 0, t_adj = 0, t_kind[4] = {0, 0, 0, 0};
         const int Wn = RF.window_points();
         std::vector<double> JK, AB;
         int n_win = 0;
@@ -372,17 +439,22 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
             t_build += omp_get_wtime() - t0; t0 = omp_get_wtime();
             ResFitAdjOut wj = out(nullptr, JK.data(), false), wjt = out(nullptr, JK.data(), true), wa = out(nullptr, AB.data(), false), wat = out(nullptr, AB.data(), true);
             for(ResFitAdjOut * w : {&wj, &wjt, &wa, &wat}){ w->rf0 = f0; w->rnb = nw; }
-            on_threads([&](int it, int nt){
-                res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, wj, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
-                res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, wjt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
-                res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->Na, ci->Nb, RF.dbl_a, RF.sgl_b, wa, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
-                res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->Nb, ci->Na, RF.dbl_b, RF.sgl_a, wat, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
-            });
+            for(int kind = 0; kind < 4; kind++){
+                const double tk = omp_get_wtime();
+                on_threads([&](int it, int nt){
+                    if(kind == 0) res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, wj, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+                    if(kind == 1) res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, wjt, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+                    if(kind == 2) res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->Na, ci->Nb, RF.dbl_a, RF.sgl_b, wa, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
+                    if(kind == 3) res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->Nb, ci->Na, RF.dbl_b, RF.sgl_a, wat, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+                });
+                t_kind[kind] += omp_get_wtime() - tk;
+            }
             t_adj += omp_get_wtime() - t0;
             n_win++;
         }
         fprintf(out_stream, "XMC gradient: three-body tables rebuilt in %d window(s) of up to %d grid points for the CI and grid derivatives: "
-                "0-2 body terms %.2f s, tables %.2f s, three-body terms %.2f s\n", n_win, Wn, t_main, t_build, t_adj);
+                "0-2 body terms %.2f s, tables %.2f s, three-body terms %.2f s (AAA %.2f, BBB %.2f, AAB %.2f, ABB %.2f)\n", n_win, Wn, t_main, t_build, t_adj,
+                t_kind[0], t_kind[1], t_kind[2], t_kind[3]);
     }
     if(!want_ci_and_grid) return 0;
 
@@ -408,6 +480,108 @@ int res_fit_E2_adjoint(res_fit_data & RF, const double * W, ResFitAdjResult * R,
     return 0;
 }
 
+namespace{
+// The table seeds of the three-body terms without atomics: each thread owns groups of table rows (schedule(dynamic) over the groups, called
+// inside a parallel region; the implicit barrier at the end of the loop lets the next call write the same table).
+// One term: Rbar[idx, f] += sign CI_0[i_s] sum_j W[i_s,j] CI_e[j] C[f - S] for the stencil points in the seed window.
+inline void seed_term(const ResFitAdjOut & o, size_t idx, int n_s, const double * W, const double * CI_0, const double * CI_e, double sign, int det,
+                      const int * L_fit, const int * S_fit, const double * C_fit){
+    const int np1 = 2 * n_fit_pol + 1;
+    double * Rb = o.Rbar + idx * o.nb - o.f0;
+    for(int i_s = 0; i_s < n_s; i_s++){
+        const int L = L_fit[det * n_s + i_s], S = S_fit[det * n_s + i_s];
+        const int l0 = S < o.f0 ? o.f0 - S : 0, l1 = S + L > o.f0 + o.nb ? o.f0 + o.nb - S : L;
+        if(l0 >= l1) continue;
+        double we = 0.0;
+        for(int j = 0; j < n_s; j++) we += W[i_s * n_s + j] * CI_e[j];
+        const double coef = sign * CI_0[i_s] * we;
+        const double * C = C_fit + (size_t)np1 * (det * n_s + i_s);
+        for(int l = l0; l < l1; l++) Rb[S + l] += coef * C[l];
+    }
+}
+
+// the terms of res_fit_adj_3body_AAA, rows grouped by their first three indices (t, u, v): the signs of the t, u, v loops follow from the occupations
+void seed_3body_AAA(const double * W, int n_s, int ld, const double * ci, int N, int na, int Na, int Nb, int * fa, const int * vec_a,
+                    const ResFitAdjOut & o, const int * L_fit, const int * S_fit, const double * C_fit){
+    std::vector<int> bit_a(N), buf(na + 2, 0);
+    #pragma omp for schedule(dynamic)
+    for(int g = 0; g < N * N * N; g++){
+        const int t = g / (N * N), u = (g / N) % N, v = g % N;
+        if(u <= t) continue;
+        for(int i_CI = 0; i_CI < Na; i_CI++){
+            std::fill(bit_a.begin(), bit_a.end(), 0);
+            for(int k = 1; k < na + 1; k++) bit_a[vec_a[i_CI * (na + 1) + k] - 1] = 1;
+            if(!bit_a[t] || !bit_a[u]) continue;
+            bit_a[t] = 0; bit_a[u] = 0;
+            if(bit_a[v]) continue;
+            int n1 = 0, n2 = 0;
+            for(int k = t + 1; k < u; k++) n1 += bit_a[k];      // occupied between t and u (u was occupied, t removed)
+            for(int k = 0; k < v; k++) n2 += bit_a[k];          // occupied below v after removing t and u
+            const double sign12 = ((n1 + n2) & 1) ? -1.0 : 1.0;
+            bit_a[v] = 1;
+            double sign3 = 1;
+            for(int w = 0; w < N; w++) if(bit_a[w] != 0){
+                bit_a[w] = 0;
+                for(int x = 0; x < N; x++) if(bit_a[x] == 0){
+                    double sign4 = 1;
+                    for(int y = x + 1; y < N; y++){
+                        if(bit_a[y] == 0){
+                            bit_a[x] = 1; bit_a[y] = 1;
+                            const int i_CIext = get_ind_from_ON(bit_a.data(), N, na, fa, buf.data());
+                            const double sign = sign12 * sign3 * sign4;
+                            const size_t R = (size_t)(((((t * N + u) * N + v) * N + y) * N + x) * N + w);
+                            for(int j_CI = 0; j_CI < Nb; j_CI++)
+                                seed_term(o, R, n_s, W, ci + ((size_t)i_CI * Nb + j_CI) * ld, ci + ((size_t)i_CIext * Nb + j_CI) * ld, sign, i_CI * Nb + j_CI,
+                                          L_fit, S_fit, C_fit);
+                            bit_a[x] = 0; bit_a[y] = 0;
+                        }
+                        else
+                            sign4 = -sign4;
+                    }
+                }
+                bit_a[w] = 1;
+                sign3 = -sign3;
+            }
+        }
+    }
+}
+
+// the terms of res_fit_adj_3body_AB, rows grouped by the alpha double (t, u, v, w): Dinv lists for every double the strings it applies to
+void seed_3body_AB(const double * W, int n_s, int ld, const double * ci, int N, int Nb, const rf_rep_list & Dinv, const rf_rep_list & S1,
+                   const ResFitAdjOut & o, const int * L_fit, const int * S_fit, const double * C_fit){
+    const size_t N2 = (size_t)N * N;
+    const int n4 = N * N * N * N;
+    #pragma omp for schedule(dynamic)
+    for(int g = 0; g < n4; g++)
+    for(long e = Dinv.off[g]; e < Dinv.off[g + 1]; e++){
+        const int i_CI = Dinv.orb[e];                       // the string the double applies to
+        const double * CI_x = ci + (size_t)Dinv.ext[e] * Nb * ld;
+        const double sa = Dinv.sgn[e];
+        for(int j_CI = 0; j_CI < Nb; j_CI++){
+            const int det = i_CI * Nb + j_CI;
+            if(!det_in_window(o, det, n_s, L_fit, S_fit)) continue;
+            for(long b = S1.off[j_CI]; b < S1.off[j_CI + 1]; b++)
+                seed_term(o, (size_t)g * N2 + S1.orb[b], n_s, W, ci + (size_t)det * ld, CI_x + (size_t)S1.ext[b] * ld, sa * S1.sgn[b], det, L_fit, S_fit, C_fit);
+        }
+    }
+}
+
+// the doubles regrouped by their orbital part: off over the N^4 doubles, orb = the string, ext = the new string
+void invert_doubles(const rf_rep_list & D, int N, int Ns, rf_rep_list & inv){
+    const int n4 = N * N * N * N;
+    inv.off.assign(n4 + 1, 0);
+    for(size_t e = 0; e < D.orb.size(); e++) inv.off[D.orb[e] + 1]++;
+    for(int g = 0; g < n4; g++) inv.off[g + 1] += inv.off[g];
+    inv.orb.resize(D.orb.size()); inv.ext.resize(D.orb.size()); inv.sgn.resize(D.orb.size());
+    std::vector<long> pos(inv.off.begin(), inv.off.end() - 1);
+    for(int i = 0; i < Ns; i++)
+        for(long e = D.off[i]; e < D.off[i + 1]; e++){
+            const long k = pos[D.orb[e]]++;
+            inv.orb[k] = i; inv.ext[k] = D.ext[e]; inv.sgn[k] = D.sgn[e];
+        }
+}
+}
+
 int res_fit_E2_adjoint_3body(res_fit_data & RF, const double * W, int f0, int nb, double * P3J, double * P3A){
     const int nA = RF.n_a, Nf = RF.N_fit, ns = RF.n_s;
     const size_t n6 = (size_t)nA * nA * nA * nA * nA * nA;
@@ -415,11 +589,14 @@ int res_fit_E2_adjoint_3body(res_fit_data & RF, const double * W, int f0, int nb
     aldet_data * ci = RF.ci;
     auto out = [&](double * Rbar){ ResFitAdjOut o; o.Rbar = Rbar; o.Nf = Nf; o.f0 = f0; o.nb = nb; return o; };
     const ResFitAdjOut oj = out(P3J), oa = out(P3A);
-    on_threads([&](int it, int nt){
-        res_fit_adj_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, oj, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
-        res_fit_adj_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, oj, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
-        res_fit_adj_3body_AB(W, ns, ns, ci->coef[0], nA, ci->Na, ci->Nb, RF.dbl_a, RF.sgl_b, oa, RF.L_fit, RF.S_fit, RF.C_fit, Nf, it, nt);
-        res_fit_adj_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->Nb, ci->Na, RF.dbl_b, RF.sgl_a, oa, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr, Nf, it, nt);
+    rf_rep_list inv_a, inv_b;
+    invert_doubles(RF.dbl_a, nA, ci->Na, inv_a);
+    invert_doubles(RF.dbl_b, nA, ci->Nb, inv_b);
+    on_threads([&](int, int){
+        seed_3body_AAA(W, ns, ns, ci->coef[0], nA, ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a, oj, RF.L_fit, RF.S_fit, RF.C_fit);
+        seed_3body_AAA(W, ns, ns, ci->coef_bas[0], nA, ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b, oj, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr);
+        seed_3body_AB(W, ns, ns, ci->coef[0], nA, ci->Nb, inv_a, RF.sgl_b, oa, RF.L_fit, RF.S_fit, RF.C_fit);
+        seed_3body_AB(W, ns, ns, ci->coef_bas[0], nA, ci->Na, inv_b, RF.sgl_a, oa, RF.L_fit_tr, RF.S_fit_tr, RF.C_fit_tr);
     });
     return 0;
 }
