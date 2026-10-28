@@ -1,0 +1,17 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=1 CAS=1 D5=1 RI=1 NAME=nh3 $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvdz;
+ _RI_BASIS=cc-pvdz-ri;
+ _UNITS= ang;
+ _xyz
+4
+nh3
+N 0.000000 0.000000 0.120000
+H 0.000000 0.940000 -0.280000
+H 0.810000 -0.470000 -0.250000
+H -0.800000 -0.480000 -0.300000
+$act_space n_alp=2 n_bet=2 n_val=4 mult=1 p_n=10; $end
+$END
+$RHF maxit=100 dE=1e-14 grad=1e-9 $END
+$CAS n_s=2 w_state=1 1; maxit=300 dE=1e-14 grad=1e-9 step=1e-11 p_cutoff=0.03 $END
