@@ -54,7 +54,7 @@ int main(int argc, char ** argv){
     nopt_engines_link_mol(&M);
     const char * method = analytic_gradient_method(&P);
     if(!method) return 3;
-    if(root == -2) root = -1;   // SA-CASSCF: the state-averaged energy unless -root N
+    if(root == -2) root = !strcmp(method, "xmcqdpt2") ? 0 : -1;
 
     char name[1024]; snprintf(name, sizeof name, "%s_opt.xyz", P.job_name);
     FILE * traj = fopen(name, "w");
