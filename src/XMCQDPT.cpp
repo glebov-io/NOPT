@@ -1,10 +1,17 @@
 # include "blas_link.h"
+# include "energy_result.h"
 # include "molecule2.h"
 # include "matr.h"
 # include "defaults.h"
 # include "doCI_data.h"
 # include "doCI_matr.h"
 # include "res_fit.h"
+#undef RES_FIT_H      // PT_tensors.h shares the include guard of res_fit.h
+# include "PT_tensors.h"
+# include "pt_vjp.h"
+# include "xmc_vjp_test.h"
+# include "res_fit_adj.h"
+# include "gradient_xmc.h"
 # include "RI.h"
 # include "inp_out.h"
 # include "xmc_read.h"
@@ -111,6 +118,7 @@ int vec_col_link(double * AB, double * A, double * B, int a, int b, int h){
 
 int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     
+    if(g_xmc_grad.root>=0)xmc_grad_snapshot(M, xmc);   // analytic gradient: reference snapshot before anything is rotated
     
     if(RI){
         gen_RI_AA(M);
@@ -485,10 +493,27 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     fflush(out_stream);
     res_fit_data RF;//resolvent fitting
     RF.set_par(&(D.aldet), E0, n_s, &RI, eps, n_cor, n_act, n_virt, H_AV, H_CA, H_CV, xmc->edshift);
+    // the three-body tables stay whole when the self-tests read them after E2_calc, or on request; otherwise E2_calc builds and contracts them window
+    // by window (NOPT_XMC_WINDOW_MB), and the analytic gradient rebuilds the windows it needs
+    RF.full_tables = (getenv("NOPT_XMC_VJP_TEST")&&*getenv("NOPT_XMC_VJP_TEST")) || (getenv("NOPT_XMC_ADJ_TEST")&&*getenv("NOPT_XMC_ADJ_TEST"))
+                     || (getenv("NOPT_XMC_FULL_TABLES")&&*getenv("NOPT_XMC_FULL_TABLES"));
     RF.gen_grid(xmc->n_fit, xmc->n_fit_pol);
+    if(getenv("NOPT_XMC_VJP_TEST")&&*getenv("NOPT_XMC_VJP_TEST")){
+        // validation only: the block adjoints against the resolvent tables of res_fit_data at one grid point
+        PT_tensors Tt;
+        Tt.set_par(&RI, eps, n_cor, n_act, n_virt, H_AV, H_CA, H_CV, xmc->edshift, M);
+        const int fg = (getenv("NOPT_XMC_VJP_GRID")&&*getenv("NOPT_XMC_VJP_GRID")) ? atoi(getenv("NOPT_XMC_VJP_GRID")) : xmc->n_fit/2;
+        if(xmc_vjp_selftest(Tt, RF, getenv("NOPT_XMC_VJP_TEST"), fg))fprintf(out_stream,"XMC VJP SELF-TEST FAILED\n");
+    }
     
+    if(getenv("NOPT_XMC_ADJ_TEST")&&*getenv("NOPT_XMC_ADJ_TEST")){
+        // validation only: adjoint of the table/CI contraction against the production contractions on random tables
+        if(res_fit_adj_selftest(RF))fprintf(out_stream,"XMC CONTRACTION ADJOINT TEST FAILED\n");
+    }
     if(xmc->d_only==0){
         RF.E2_calc        (E2);
+        if(g_xmc_grad.root>=0&&!g_xmc_grad.status)   // analytic gradient: tables, grid and rotated CI vectors are in place here
+            xmc_grad_main(M, xmc, D, RF, RI, eps, U, C, E0, H01, E2, H_AV, H_CA, H_CV);
     }
     
     
@@ -612,6 +637,7 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     fprintf(out_stream,"\n");
     fprintf(out_stream,"E(CAS):\n");
     PrintEnergy(E0, n_s,0);
+    energy_result_record("xmc_cas","",-1,E0,n_s);
     
    if(xmc->d_only){
         set_zero_matr(S0PP,n_s*n_s);
@@ -619,9 +645,11 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     }
     memcpy(S0PP ,D.ACT_DET_A,n_s*n_s*sizeof(double));
     HC_SCE(H2, S0PP, C, B, E0, n_s);
+    xmc_grad_check_final(E0, n_s);
     fprintf(out_stream,"\n");
     fprintf(out_stream,"E(MP2):\n");
     PrintEnergy(E0, n_s,1);
+    energy_result_record("xmcqdpt2","",-1,E0,n_s);
     fprintf(out_stream,"\n");
     fprintf(out_stream,"H(0-2) eigenvectors in the basis of initial states:\n");
     PrintRowVec(C,n_s,n_s);

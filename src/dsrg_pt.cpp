@@ -5,6 +5,7 @@
 // basis, then drive the dsrg_sf_tensors core plus the batched CCVV/CAVV/CCAV terms.
 
 # include <cstdio>
+# include "energy_result.h"
 # include <cstdlib>
 # include <cmath>
 # include <vector>
@@ -25,6 +26,8 @@
 # include "dsrg_sf_tensors.h"
 # include "dsrg_sf_batch.h"
 # include "dsrg_pt.h"
+# include "dsrg_grad.h"
+# include "aldet_rdm_adj.h"
 # include "dmrg_log.h"         // per-solve block2 sweep log
 
 // A relaxed dressed root is assigned to its argmax bare root only above this |CI overlap|.
@@ -63,6 +66,9 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
 
     dsrg->write_info(M->n_act_el_alp[0], M->n_act_el_bet[0],
                      M->n_act_orb[0],    M->CI[0].mult);
+
+    // analytic gradient: the CAS-SCF reference before anything here rotates the orbitals
+    if(g_dsrg_grad.want) dsrg_grad_snapshot(M, dsrg);
 
     // ---- CAS_engine on the converged orbitals; bare SA solve ----
     CAS_engine CAS;
@@ -246,6 +252,8 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
         }
     }
     rotate3(G3_avg.data(), Ua.data(), n_act, G3_semi.data(), /*forward=*/true);
+    std::vector<double> G3_moment_semi;   // the moment before compute_e3 turns it into the cumulant (analytic-gradient tape)
+    if(getenv("NOPT_DSRG_TAPE_TEST") || g_dsrg_grad.want) G3_moment_semi = G3_semi;
     T.compute_e3(G3_semi.data());   // G3_semi becomes SF_L3 and is read again by pilot_dump
 
 #if 0  // DIRECT lambda3 path (superseded by the explicit lattice-3RDM route; revive for nact >~ 30)
@@ -290,6 +298,43 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
     T.ledger.cavv = E_CAVV;
     T.ledger.ccav = E_CCAV;
 
+    // the inputs of the algebra core, for the analytic gradient and its check
+    DsrgTapeIn ti;
+    ti.nc=n_cor; ti.na=n_act; ti.nv=n_vir; ti.naux=naux; ti.s=s; ti.ccvv_zero=ccvv_zero;
+    ti.VC=R.VC_RI_M; ti.VA=R.VA_RI_M; ti.CA=R.CA_RI_M; ti.AA=R.AA_RI_M;
+    ti.ec=eps_c; ti.ea=eps_a; ti.ev=eps_v; ti.fca=f_ca.data(); ti.fcv=f_cv.data(); ti.fav=f_av.data();
+    ti.L1=L1_semi.data(); ti.GAMMA=GAMMA_semi.data(); ti.G3=G3_moment_semi.data(); ti.hcd=h_core_diag.data(); ti.hact=h_active.data(); ti.escalar=e_scalar;
+    if(getenv("NOPT_DSRG_TAPE_TEST")){
+        // check: the energy transcribed onto the reverse-mode tape against the production ledger, then the tape adjoints against FD
+        DsrgTapeLedger tl; dsrg_tape_energy(ti, &tl, nullptr);
+        const dsrg_pt2_ledger & PL = T.ledger;
+        const double pr[20]={PL.E_FT1,PL.E_FT2,PL.E_VT1,PL.aavv_L1,PL.aavv_L2,PL.ccaa_L1,PL.ccaa_L2,PL.caav_L1,PL.caav_L2,PL.caaa_L1,PL.caaa_L2,
+                             PL.aaav_L1,PL.aaav_L2,PL.E3v,PL.E3c,Eref,E_CCVV,E_CAVV,E_CCAV,Eref+PL.E2_incore()+E_CCVV+E_CAVV+E_CCAV};
+        const double tv[20]={tl.E_FT1,tl.E_FT2,tl.E_VT1,tl.aavv_L1,tl.aavv_L2,tl.ccaa_L1,tl.ccaa_L2,tl.caav_L1,tl.caav_L2,tl.caaa_L1,tl.caaa_L2,
+                             tl.aaav_L1,tl.aaav_L2,tl.E3v,tl.E3c,tl.Eref,tl.ccvv,tl.cavv,tl.ccav,tl.total};
+        const char * nm[20]={"[F,T1]","[F,T2]","[V,T1]","AAVV L1","AAVV L2","CCAA L1","CCAA L2","CAAV L1","CAAV L2","CAAA L1","CAAA L2",
+                             "AAAV L1","AAAV L2","E3v","E3c","Eref","DF CCVV","DF CAVV","DF CCAV","total"};
+        int bad=0;
+        fprintf(out_stream,"\nDSRG tape vs production ledger:\n");
+        for(int k=0;k<20;k++){ const double d=std::fabs(pr[k]-tv[k]); if(d>1e-11*std::max(1.0,std::fabs(pr[k]))) bad++;
+            fprintf(out_stream,"   %-8s production % .14e  tape % .14e  diff %.1e\n",nm[k],pr[k],tv[k],d); }
+        if(bad) fprintf(out_stream,"DSRG TAPE LEDGER MISMATCH (%d terms)\n",bad);
+        if(dsrg_tape_selftest(ti)) fprintf(out_stream,"DSRG TAPE SELF-TEST FAILED\n");
+        if(g_dsrg_grad.ref!=nullptr){
+            fprintf(out_stream,"\nDSRG CI-vector adjoints of the RDM routines (root %d):\n",root);
+            if(aldet_rdm_vjp_selftest(*g_dsrg_grad.ref, g_dsrg_grad.ref->root_vector(root).data()))fprintf(out_stream,"DSRG RDM ADJOINT SELF-TEST FAILED\n");
+        }
+    }
+    std::vector<int> groots; std::vector<double> gw;   // the reference roots whose densities were averaged (analytic gradient)
+    if(!sa){ groots.push_back(root); gw.push_back(1.0); }
+    else{
+        double wsum=0.0; for(int t=0;t<ns;t++) wsum += CAS.wstate_actual[t];
+        for(int t=0;t<ns;t++) if(CAS.wstate_actual[t]>0.0){ groots.push_back(t); gw.push_back(CAS.wstate_actual[t]/wsum); }
+    }
+    if(g_dsrg_grad.want && !g_dsrg_grad.status && dsrg->relax==DSRG_RELAX_NONE){
+        dsrg_gradient(M, ti, M->MO_VEC, M->orb_energy, Uc.data(), Ua.data(), Uv.data(), groots, gw);
+    }
+
     // ---- env-gated pilot dump (unrelaxed tail; relax=once dumps after the re-solve so the
     //      dressed operator and per-root data reach the §tail) ----
     if(dsrg->relax==DSRG_RELAX_NONE && getenv("DSRG_PILOT_DUMP"))
@@ -328,6 +373,7 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
     fprintf(out_stream,"      DF CCAV                        = % .12f\n", E_CCAV);
     fprintf(out_stream,"\n  Correlation energy E(2)            = % .12f\n", E_corr);
     fprintf(out_stream,"  Total DSRG-PT2 energy              = % .12f\n", Eref + E_corr);
+    energy_result_record("dsrg_pt2",sa?"sa":"root",sa?-1:root,Eref+E_corr);
 
     if(sa && dsrg->relax==DSRG_RELAX_NONE)
         fprintf(out_stream,"\n  NOTE: sa=1 without relax=once reports the ensemble average only; per-state "
@@ -385,6 +431,16 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
         dsrg_sf_Hbar1_CCAV(R.VC_RI_M, R.CA_RI_M, n_cor, n_act, n_vir, naux,
                            eps_c, eps_a, eps_v, s, T.hbar1_ref().data());
         T.degno();
+        if(getenv("NOPT_DSRG_TAPE_TEST")){
+            // relax=once check: the dressed operator on the tape against build_hbar + batched folds + degno
+            DsrgRelaxOut ro; dsrg_tape_energy(ti, nullptr, nullptr, nullptr, &ro);
+            double d1=0, d2=0;
+            for(size_t k=0;k<na2;k++) d1=std::max(d1,std::fabs(ro.h1[k]-T.dressed_h1()[k]));
+            for(size_t k=0;k<na4;k++) d2=std::max(d2,std::fabs(ro.h2_chem[k]-T.dressed_h2_chem()[k]));
+            const double d0=std::fabs(ro.e0-T.dressed_e0());
+            fprintf(out_stream,"\nDSRG tape vs production dressed operator: e0 %.2e  h1 %.2e  h2 %.2e  %s\n",d0,d1,d2,(std::max(d0,std::max(d1,d2))<1e-11)?"ok":"MISMATCH");
+            if(std::max(d0,std::max(d1,d2))>=1e-11) fprintf(out_stream,"DSRG TAPE RELAX MISMATCH\n");
+        }
 
         // Seam re-solve on the dressed operator (never CI_calc: it re-imports the bare integrals
         // and clobbers the dressing). e0_d is the total-energy scalar, passed as-is.
@@ -441,8 +497,14 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
         }
         double e_relax=0.0, w_cov=0.0;
         for(int d=0;d<ns;d++){ e_relax += wd[d]*E_dressed[d]; w_cov += wd[d]; }
+        if(w_cov>0.0) energy_result_record("dsrg_pt2",sa?"sa_relaxed":"relaxed",sa?-1:root,e_relax);
 
         T.set_root_data(wref.data(), E_bare.data(), E_dressed.data(), root_map.data(), ns);
+
+        if(g_dsrg_grad.want && !g_dsrg_grad.status){
+            if(CAS.CI->as_aldet()==nullptr){ fprintf(out_stream,"ERROR: the relaxed DSRG-PT2 gradient needs cisolver=aldet\n"); g_dsrg_grad.status=1; }
+            else dsrg_relax_gradient(M, ti, M->MO_VEC, M->orb_energy, Uc.data(), Ua.data(), Uv.data(), groots, gw, CAS.CI->as_aldet(), wd, E_dressed);
+        }
 
         if(getenv("DSRG_PILOT_DUMP"))
             T.pilot_dump(getenv("DSRG_PILOT_DUMP"), M->n_act_el_alp[0], M->n_act_el_bet[0], ns, root);

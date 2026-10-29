@@ -1,0 +1,20 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=1 CAS=1 XMC=1 D5=1 RI=1 NAME=c2h4_pyr55 $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvdz;
+ _RI_BASIS=cc-pvdz-ri;
+ _UNITS= ang;
+ _xyz
+6
+ethylene twisted 90, pyramidalized 55 deg
+C     0.000000     0.000000     0.000000
+C     1.400000     0.000000     0.000000
+H    -0.540000     0.000000     0.935307
+H    -0.540000    -0.000000    -0.935307
+H     1.709731     0.536470     0.884684
+H     1.709731    -0.536470     0.884684
+$act_space n_alp=1 n_bet=1 n_val=2 mult=1 p_n=10; $end
+$END
+$RHF maxit=200 dE=1e-14 grad=1e-9 $END
+$CAS n_s=2 w_state=1 1; maxit=300 dE=1e-15 grad=1e-10 step=1e-11 p_cutoff=0.03 $END
+$XMC EDSHIFT=0.01 n_fit=40 $END

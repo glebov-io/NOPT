@@ -1,0 +1,35 @@
+{
+  "comment": "dir is relative to the repository root. log is the example's own reference log, compared at 1e-6 Eh (printed 10 digits, other machine). A case may set its own tol (Eh) for the golden, variant and thread comparisons, and name variants that edit the input or set an environment variable; the energies must not change.",
+  "cases": [
+    {
+      "name": "c4h6_xmc",
+      "dir": "examples/c4h6_pt",
+      "input": "xmc.inp",
+      "log": "benchmark_xmc.log",
+      "variants": {
+        "noprop": {
+          "drop_lines": "^\\$PROP"
+        }
+      }
+    },
+    {
+      "name": "cis",
+      "dir": "examples/cis",
+      "input": "cis.inp",
+      "log": "benchmark.log"
+    },
+    {
+      "name": "dsrg4ene_aldet",
+      "dir": "examples/dsrg/4ene",
+      "input": "4ene_DSRG_aldet.inp",
+      "log": "4ene_DSRG_aldet.log",
+      "tol": 5e-09,
+      "tol_note": "1 vs 4 threads differ by 1.6e-9: the SA-CASSCF stops at dE=1e-9, so this is convergence noise, not a bug"
+    },
+    {
+      "name": "h2o_rhf",
+      "dir": "tests/gradients/fixtures/h2o",
+      "input": "h2o_rhf.inp"
+    }
+  ]
+}
