@@ -12,6 +12,7 @@
 # include "localizer.h"
 # include "cdas_gno.h"
 # include "dmrg_log.h"         // per-solve block2 sweep log
+# include <algorithm>
 #ifdef NOPT_HAS_BLOCK2
 # include "block2_casci_wrap.h"
 #endif
@@ -164,7 +165,10 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[i];
     }
     if(cdas->HOMO){
-        for(int i=0; i<n_act;i++)eps_a[i]=eps_a[M->n_act_el_alp[0]-1];
+        //the n_alp-th lowest active energy: under $SYMM eps_a ascends per irrep, not overall
+        std::vector<double> e_act(eps_a, eps_a+n_act);
+        std::nth_element(e_act.begin(), e_act.begin()+M->n_act_el_alp[0]-1, e_act.end());
+        for(int i=0; i<n_act;i++)eps_a[i]=e_act[M->n_act_el_alp[0]-1];
     }
     if(cdas->sing_e){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[0];
