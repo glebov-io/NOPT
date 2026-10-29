@@ -2296,6 +2296,12 @@ int inp_par::read(char * ext_inp){
     
     read_p_group(inp_name);
     
+    // One PT stage per run: each leaves the orbitals, CI vectors or mc on the molecule in its own state.
+    if((xmc.y!=0)+(cdas.y!=0)+(dsrg.y!=0)+(mp2.y!=0)>1){
+        fprintf(out_stream,"ERROR: XMC, CDAS, DSRG and MP2 cannot be combined in one run; use one input per PT method\n");
+        exit(EXIT_FAILURE);
+    }
+    
     mol_line       = count_groups(inp_name,      mol_group      ,      mol_group_end);
     
     int mc=0;
