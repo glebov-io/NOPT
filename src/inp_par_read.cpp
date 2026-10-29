@@ -2301,6 +2301,12 @@ int inp_par::read(char * ext_inp){
         fprintf(out_stream,"ERROR: XMC, CDAS, DSRG and MP2 cannot be combined in one run; use one input per PT method\n");
         exit(EXIT_FAILURE);
     }
+    // CIS leaves H_AO in the MO basis, which every CAS-family stage reads as the AO core Hamiltonian.
+    if(cis.y && (cas.y||xmc.y||cdas.y||dsrg.y)){
+        fprintf(out_stream,"ERROR: CIS cannot be combined with CAS/XMCQDPT/CDAS/DSRG in one run "
+                           "(it leaves the core Hamiltonian in the MO basis)\n");
+        exit(EXIT_FAILURE);
+    }
     
     mol_line       = count_groups(inp_name,      mol_group      ,      mol_group_end);
     
