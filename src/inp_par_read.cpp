@@ -2307,6 +2307,11 @@ int inp_par::read(char * ext_inp){
                            "(it leaves the core Hamiltonian in the MO basis)\n");
         exit(EXIT_FAILURE);
     }
+    // CIS builds its two-electron integrals from the RI tensors only.
+    if(cis.y && RI==0){
+        fprintf(out_stream,"ERROR: CIS requires RI=1\n");
+        exit(EXIT_FAILURE);
+    }
     
     mol_line       = count_groups(inp_name,      mol_group      ,      mol_group_end);
     
