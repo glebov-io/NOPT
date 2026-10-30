@@ -106,6 +106,12 @@ struct Block2Runtime {
             ThreadingTypes::OperatorBatchedGEMM | ThreadingTypes::Global,
             n_threads, n_threads, 1);
         threading_()->seq_type = SeqTypes::Tasked;
+        // Threading also turns nesting on and MKL dynamic off, which block2 needs only when its
+        // own BLAS is threaded (n_threads_mkl > 1); the host's regions must not nest.
+        omp_set_max_active_levels(1);
+#ifdef _MKL
+        mkl_set_dynamic(1);
+#endif
     }
 
     ~Block2Runtime() {
@@ -506,7 +512,7 @@ static void ensure_dm_full(dmrgci_engine &e) {
 // is a partially-deallocated shell whose StateInfos dangle into freed stack memory; the on-disk copy
 // is authoritative. load_data/load_mutable reallocate every StateInfo/SparseMatrixInfo on the heap,
 // rebuilt against the current MPO basis.
-static void reload_retained_mps(dmrgci_engine &e) {
+void nopt_block2::reload_retained_mps(dmrgci_engine &e) {
     const std::string tag = e.mps_info->tag;
     auto info = std::make_shared<MultiMPSInfo<SU2>>(e.mpo->n_sites, e.hamil->vacuum,
                                                     std::vector<SU2>{e.target}, e.mpo->basis);
@@ -676,6 +682,7 @@ static const int DMRG_GAOPT_DRIFT_TASKS = 1;
 
 void block2_casci_wrap::import_integrals(double *aaaa, double *f_act, double e_core) {
     dmrgci_engine &e = *impl_;
+    host_threads_guard htg;
     n_act_ = e.n_act;
     const int n = n_act_; //short name for more readability
     
@@ -749,18 +756,16 @@ void block2_casci_wrap::import_integrals(double *aaaa, double *f_act, double e_c
     e.hamil = std::make_shared<HamiltonianQC<SU2, double>>(vacuum, n, e.orbsym, e.fcidump);
     e.hamil->opf->seq->mode = SeqTypes::Tasked;
     e.mpo = build_qc_mpo(e.hamil, resolve_low_m_opt(e));
+    e.mpo_bare = e.mpo;
+    e.mpo_f = e.mpo_d = nullptr; // a general handle describes the orbitals just replaced
+    e.op_kind = OP_BARE;
     e.dressed_mpo = false; // any previous dressing leaves with the rebuilt bare MPO
 }
-
-// One-site sweeps closing every solve. Mirrors block2's default schedule, which ends two sweeps
-// into the noise-free stage in one-site mode (pyblock2/driver/parser.py sets twodot_to_onedot =
-// last_iter + 2 unless the input overrides it).
-static const int DMRG_ONEDOT_TAIL = 2;
 
 // Put the MPS back into a two-site center after a one-site tail: a one-site sweep ends with a fused
 // single-site center ('J'/'T') at a boundary, and every downstream consumer builds its layout from
 // canonical_form/center/dot, which must agree. Port of block2's DMRGDriver::adjust_mps(dot=2).
-static void adjust_mps_two_dot(dmrgci_engine &e) {
+void nopt_block2::adjust_mps_two_dot(dmrgci_engine &e) {
     auto &mps = e.mps;
     auto cg = e.mpo->tf->opf->cg;
     const int n = mps->n_sites;
@@ -827,6 +832,10 @@ static void recompute_cold_order(dmrgci_engine &e) {
     e.hamil = std::make_shared<HamiltonianQC<SU2, double>>(vacuum, n, e.orbsym, e.fcidump);
     e.hamil->opf->seq->mode = SeqTypes::Tasked;
     e.mpo = build_qc_mpo(e.hamil, resolve_low_m_opt(e));
+    e.mpo_bare = e.mpo;
+    e.mpo_f = e.mpo_d = nullptr; // a general handle describes the lattice just re-ordered
+    e.op_kind = OP_BARE;
+    e.dressed_mpo = false;
 }
 
 // State-averaged occupations of the last solve's 1-RDM, in this solve's site basis and lattice
@@ -956,7 +965,7 @@ int block2_casci_wrap::solve(int, int, bool use_prev_guess) {
         // built from the equal-weight average density matrix -- exactly SA-CASSCF.
         if (e.mps_info != nullptr)
             remove_tag_files(e.mps_info->tag);
-        Random::rand_seed(0);
+        Random::rand_seed(e.cold_seed);
         e.mps_info = std::make_shared<MultiMPSInfo<SU2>>(e.mpo->n_sites, e.hamil->vacuum,
                                                          std::vector<SU2>{e.target}, e.mpo->basis);
         // unique per engine and macro-iteration

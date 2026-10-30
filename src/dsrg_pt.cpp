@@ -26,6 +26,7 @@
 # include "dsrg_sf_batch.h"
 # include "dsrg_pt.h"
 # include "dmrg_log.h"         // per-solve block2 sweep log
+# include "grabbers.h"
 
 // A relaxed dressed root is assigned to its argmax bare root only above this |CI overlap|.
 static const double DSRG_RELAX_OVERLAP_MIN = 0.9;
@@ -53,6 +54,8 @@ static double block_offdiag_max(const double * Xblock, const double * Usub, int 
 }
 
 int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
+    // CASSCF has published its n_s energies; DSRG replaces them with its own result, or with none.
+    E_grabbed.clear();
     dmrg_log_set_tag(dmrg_log_tag::dsrg);
 
     if(RI==0){
@@ -345,6 +348,12 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
     }
     fprintf(out_stream,"============================================================================\n\n");
 
+    // relax=none publishes the total above (the ensemble's for sa=1); relax=once publishes below.
+    if(grab_E==1 && dsrg->relax==DSRG_RELAX_NONE){
+        E_grabbed.resize(1);
+        E_grabbed[0]=Eref+E_corr;
+    }
+
     // ---- reference relaxation (relax = once): fold the DSRG dressing into a bare active
     //      0/1/2-body operator and re-solve it in the active space, then map dressed roots to
     //      bare roots by wavefunction overlap and permute the reference weights onto the dressed
@@ -467,6 +476,18 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
             fprintf(out_stream,"\n  NOTE: %d dressed root(s) matched no reference root ('?' above); they are averaged\n"
                                "        in with the unclaimed reference weights.\n", n_unm);
         fprintf(out_stream,"============================================================================\n\n");
+
+        // sa=1: every dressed root, in dressed order; sa=0: the relaxed target root, if one matched.
+        if(grab_E==1){
+            if(sa){
+                E_grabbed.resize(ns);
+                for(int d=0;d<ns;d++) E_grabbed[d]=E_dressed[d];
+            }
+            else if(w_cov>0.0){
+                E_grabbed.resize(1);
+                E_grabbed[0]=e_relax;
+            }
+        }
     }
 
     printf_timer("DSRG-PT2");

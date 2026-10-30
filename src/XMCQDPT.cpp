@@ -362,9 +362,9 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
         double  H_2el = D.H_2el_calc(S) + D.h_2e[i*n_s+j]*D.p_SVD;
         
         S=S*D.p_SVD;
-        d_x[i*n_s+j] = E_1el_calc(M->Dx_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD-M->Dx_nuc*S;
-        d_y[i*n_s+j] = E_1el_calc(M->Dy_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD-M->Dy_nuc*S;
-        d_z[i*n_s+j] = E_1el_calc(M->Dz_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD-M->Dz_nuc*S;
+        d_x[i*n_s+j] = E_1el_calc(M->Dx_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD+M->Dx_nuc*S;
+        d_y[i*n_s+j] = E_1el_calc(M->Dy_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD+M->Dy_nuc*S;
+        d_z[i*n_s+j] = E_1el_calc(M->Dz_AO, D.DM_T, D.n_ao[0], D.n_ao[1])*D.p_SVD+M->Dz_nuc*S;
 
         H01[i*n_s+j]=H_1el+H_2el+M->V_nuc*S;
                 

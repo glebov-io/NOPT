@@ -10,7 +10,9 @@
 # include "XMCQDPT.h"
 # include "CAS.h"
 # include "localizer.h"
+# include "cdas_gno.h"
 # include "dmrg_log.h"         // per-solve block2 sweep log
+# include <algorithm>
 #ifdef NOPT_HAS_BLOCK2
 # include "block2_casci_wrap.h"
 #endif
@@ -163,7 +165,10 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[i];
     }
     if(cdas->HOMO){
-        for(int i=0; i<n_act;i++)eps_a[i]=eps_a[M->n_act_el_alp[0]-1];
+        //the n_alp-th lowest active energy: under $SYMM eps_a ascends per irrep, not overall
+        std::vector<double> e_act(eps_a, eps_a+n_act);
+        std::nth_element(e_act.begin(), e_act.begin()+M->n_act_el_alp[0]-1, e_act.end());
+        for(int i=0; i<n_act;i++)eps_a[i]=e_act[M->n_act_el_alp[0]-1];
     }
     if(cdas->sing_e){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[0];
@@ -181,10 +186,13 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
 
     //the localized actives belong to the PT stage; the molecule gets its own back before return
     double * ACT_MO_save = nullptr;
+    int loc_realized = 0;   //localization actually applied; a fallback to U=I leaves it 0
+    std::vector<double> U_loc_keep;   //the localizing rotation, outliving the localizer block
     if(localize_act){
         pm_localizer localizer(*M);
 
-        double * U_loc = new double[n_act*n_act];
+        U_loc_keep.assign((size_t)n_act*n_act,0.0);
+        double * U_loc = U_loc_keep.data();
 
         //U=I fallback of a localizer that did not converge or could not be built; the run stays
         //in the delocalized basis, so nothing is applied
@@ -205,7 +213,10 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
             memcpy(ACT_MO, TMP_MO, sizeof(double)*M->n_act_orb[0]*M->n_ao);
             delete[] TMP_MO;
             copy_MO_to_CVEC(M->MO_VEC,n_cor,n_act, n_virt,n_ao,COR_VEC,ACT_VEC,VIRT_VEC);
+            //ACT_CVEC must follow MO_VEC: the properties contract the PT-stage RDMs with it
+            CAS->update_ACT_CVEC();
 
+            loc_realized = 1;
             fprintf(out_stream,"active-space localization converged; running localized\n");
 
             M->MO_gamess_format();
@@ -213,8 +224,6 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
             M->GAMESS_type_out_print(name,-1);
             fprintf(out_stream,"visualization file: %s\n",name);
         }
-
-        delete[] U_loc;
     }
     fprintf(out_stream,"vacant   :");fPrintMatr(out_stream,eps_e,1,n_virt,0);
     fprintf(out_stream,"\n\n");
@@ -290,6 +299,12 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
     std::unique_ptr<block2_casci_wrap> DMRG;
 #endif
 
+    //the ensemble is read off the CAS-stage engine, so it is taken before the PT stage builds its own
+    gno_ensemble_data gno_ens;
+    if(cdas->gno.on())
+        gno_ensemble(CAS, cdas, loc_realized, loc_realized?U_loc_keep.data():nullptr,
+                     cdas->gno.skip_scalar==0, gno_ens);
+
     if(CAS->CI->as_aldet()!=nullptr){
         CAS->CI->as_aldet()->simple_import_data(act_INTS, act_INTS, H_AA, E_core);
     }
@@ -298,6 +313,8 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         //the PT stage solves in the orbitals rotated above, so the solver keeps that frame
         dmrg_par pt_dmrg = cdas->cas->dmrg;
         pt_dmrg.localize = DMRG_LOC_OFF;
+        //the PT stage may be given a bond dimension of its own
+        if(cdas->m_cdas_set) pt_dmrg.m = cdas->m_cdas;
         if(ACT_MO_save!=nullptr)
             fprintf(out_stream,"NOTE: the PT stage runs in the localized orbitals -- solver-internal localization is off\n\n");
         DMRG = std::make_unique<block2_casci_wrap>(n_act, M->CI[0].na, M->CI[0].nb, M->CI[0].mult, n_s, M->CI[0].print_number, pt_dmrg);
@@ -305,8 +322,13 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         DMRG->set_state_weights(cdas->cas->w_state.data(), n_s);
         DMRG->import_integrals(act_INTS, H_AA, E_core);
         CAS->CI=DMRG.get();
-        //the bare solution is read by the IP/EA construction only
-        if(cdas->IPEA) CAS->CI->solve(1,0,false);
+        if(cdas->gno.on() && !CAS->CI->supports_operator_handles()){
+            fprintf(out_stream,"ERROR: cdas_mode=trunc_gno|delta_gno needs a backend with named operator handles; use cisolver=dmrg\n");
+            exit(EXIT_FAILURE);
+        }
+        //the bare solution is read by the IP/EA construction only, and the GNO stage builds
+        //those matrices from the CAS-stage ensemble instead
+        if(cdas->IPEA && !cdas->gno.on()) CAS->CI->solve(1,0,false);
 #else
         fprintf(out_stream,"ERROR: CISOLVER=dmrg selected, but this build was compiled without block2 (set USE_BLOCK2=yes)\n");
         exit(EXIT_FAILURE);
@@ -315,7 +337,10 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
     
     T.set_par(&R, eps, n_cor, n_act, n_virt, H_AV, H_CA, H_CV, cdas->edshift, M);
     if(cdas->IPEA){
-        T.IPEA(CAS->CI,cdas->cas->w_state);
+        if(cdas->gno.on())
+            T.IPEA(H_AA, act_INTS, gno_ens.gamma.data(), gno_ens.GAMMA.data());
+        else
+            T.IPEA(CAS->CI,cdas->cas->w_state);
         T.E2_calc_IPEA();
     }
     else if(cdas->MPPT){
@@ -333,6 +358,55 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
     printf_timer("PT tensors calculation");
     fprintf(out_stream,"_______________________________________________________________________\n\n\n");
 
+
+    //every buffer this routine owns, plus the engine and localized-MO restores
+    auto release = [&](){
+
+        delete[] H_CV;
+        delete[] H_CA;
+        delete[] H_AA;
+        delete[] H_AV;
+        delete[] H_core;
+        delete[] COR_VEC;
+        delete[] ACT_VEC;
+        delete[] VIRT_VEC;
+
+        delete[] d_x1  ;
+        delete[] d_y1  ;
+        delete[] d_z1  ;
+        delete[] d_x_CV;
+        delete[] d_y_CV;
+        delete[] d_z_CV;
+        delete[] d_x_AV;
+        delete[] d_y_AV;
+        delete[] d_z_AV;
+        delete[] d_x_CA;
+        delete[] d_y_CA;
+        delete[] d_z_CA;
+
+//         delete[] eps_EA;
+
+        delete[] name;
+
+        delete[] J       ;
+        delete[] K       ;
+        delete[] act_INTS ;
+
+        CAS->CI = CI_engine;
+
+        if(ACT_MO_save != nullptr){
+            memcpy(M->MO_VEC+M->n_cor_orb*M->n_ao, ACT_MO_save, sizeof(double)*M->n_act_orb[0]*M->n_ao);
+            delete[] ACT_MO_save;
+            CAS->update_ACT_CVEC();
+        }
+
+    };
+
+    if(cdas->gno.on()){
+        cdas_gno_run(CAS, T, cdas, gno_ens, H_AA, act_INTS, E_core);
+        release();
+        return 0;
+    }
 
     CAS->CI->PT2_import_data(T.RF_P3_JK,
                 T.RF_P3_AB,
@@ -475,42 +549,7 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
     printf_timer("CDAS-PT2");
     
     
-    delete[] H_CV;
-    delete[] H_CA;
-    delete[] H_AA;
-    delete[] H_AV;
-    delete[] H_core;
-    delete[] COR_VEC;
-    delete[] ACT_VEC;
-    delete[] VIRT_VEC;
-    
-    delete[] d_x1  ;
-    delete[] d_y1  ;
-    delete[] d_z1  ;
-    delete[] d_x_CV;
-    delete[] d_y_CV;
-    delete[] d_z_CV;
-    delete[] d_x_AV;
-    delete[] d_y_AV;
-    delete[] d_z_AV;
-    delete[] d_x_CA;
-    delete[] d_y_CA;
-    delete[] d_z_CA;
-    
-//     delete[] eps_EA;
-    
-    delete[] name;
-    
-    delete[] J       ;
-    delete[] K       ;
-    delete[] act_INTS ;
-
-    CAS->CI = CI_engine;
-
-    if(ACT_MO_save != nullptr){
-        memcpy(M->MO_VEC+M->n_cor_orb*M->n_ao, ACT_MO_save, sizeof(double)*M->n_act_orb[0]*M->n_ao);
-        delete[] ACT_MO_save;
-    }
+    release();
 
     return 0;
  

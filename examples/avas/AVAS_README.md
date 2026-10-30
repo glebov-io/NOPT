@@ -33,6 +33,12 @@ The counts are **not** chosen by AVAS: `$act_space` stays authoritative. AVAS fi
 across a σ tier rather than at the largest gap of the spectrum, a `NOTE:` line says so and the
 run proceeds as asked.
 
+Under `$SYMM` (Cs, Ci, C2, C2v, C2h, D2, D2h) both projectors are diagonalized per irrep, so every
+rotated orbital keeps its irrep label; the σ ranking is merged across irreps and a table prints how
+many selected orbitals each irrep contributes. Every input orbital must carry an irrep label, and
+`atoms=`/`shells=` must be closed under the group: each symmetry image of a listed atom is listed
+with the same labels.
+
 The rotated orbitals are always written as `<NAME>_AVAS.orb`, `<NAME>_AVAS.orb_GAMESS` and
 `<NAME>_AVAS.out`, so a steered run can be inspected and restarted from its window.
 
@@ -49,6 +55,13 @@ The rotated orbitals are always written as `<NAME>_AVAS.orb`, `<NAME>_AVAS.orb_G
   the valence labels. A label that the reference basis does not carry for an element is an error.
 - **ref_basis=** *(cc-pvtz-minao)* — the minimal basis the reference shells are taken from
   (H–Kr in the shipped library; it is also the SAD-guess basis).
+- **ncore=** *(0)* — the first `ncore` occupied orbitals are left out of the occupied projection
+  and stay, unrotated, at the bottom of the core: `ncore=18` keeps the 1s–3p cores of both Cr
+  atoms out of the selection. Accepted range 0 to the CAS core size.
+- **canonicalize=** *(0)* — `1` rotates each block (the excluded `ncore` orbitals, the rest of the
+  core, the active window, the virtuals) into eigenvectors of the closed-shell Fock matrix of the
+  input determinant, which the AVAS rotation leaves unchanged; the orbital-energy field then holds
+  these Fock eigenvalues instead of σ. Spans and the CAS energy do not change.
 
 The virtual tier is built from the reference functions alone, so its rank is at most their
 number: it holds the antibonding partners of the target shell, but it cannot supply a radially
@@ -63,7 +76,10 @@ AVAS is rejected loudly, not silently ignored, when
 - there is no `CAS=1` — nothing downstream consumes the steered window;
 - `MP2=1` or `CIS=1` is set in the same run — both need canonical orbitals;
 - `$act_space reorder=1` is set — two contradictory steering mechanisms;
-- the point group is not C1 — the rotation mixes irreps;
+- the point group has a two-dimensional irrep (C3, C3v, D3, D3h, C4v, C6v, D6h, LINEAR) — the
+  per-irrep rotation needs one-dimensional irreps;
+- under `$SYMM` an input orbital has no irrep label, `atoms=`/`shells=` are not closed under the
+  group, or a rotated orbital fails the symmetry re-check;
 - an ECP is in use — the reference shells are not all in the calculation basis.
 
 Localization and DMRG orbital ordering (`localize=pm`, `loc_order=`) are unaffected: they take

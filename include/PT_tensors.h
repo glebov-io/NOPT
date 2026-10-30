@@ -80,6 +80,8 @@ class PT_tensors
                     double * ext_H_AV, double * ext_H_CA, double * ext_H_CV,
                     double ext_edshift, molecule * A); //// ADDED - get number of alpha, beta electrons
         int IPEA(casci_solver * I, std::vector<double> avecoe);
+        //the same matrices from an ensemble already in this frame, without asking the solver
+        int IPEA(const double * g1, const double * g2, const double * gamma, const double * GAMMA);
         int MPPT(aldet_data * I, int i_set, std::vector<double> avecoe);
         int set_zero();
         int symm();
@@ -133,6 +135,11 @@ class PT_tensors
         //destructor
         ~PT_tensors();
        
+       
+    private:
+       
+        //IP/EA matrices -> the eigenpairs the dressing reads; the buffers stay the caller's
+        int IPEA_solve(double * IP_H, double * EA_H);
        
 };
 
