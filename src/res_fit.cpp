@@ -605,7 +605,7 @@ int res_fit_calc_3body_AB(double * P, int n_s, int ld,
     
     int * bit_a = new int [N];
     int * bit_b = new int [N];
-    int * buf = new int [na + 1];//more space for +a-b and -a+b
+    int * buf = new int [max(na,nb) + 1];//more space for +a-b and -a+b
     buf[0]=0;
     
     double sign ;
