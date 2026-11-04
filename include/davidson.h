@@ -38,6 +38,7 @@ class davidson_solver
         double * E_old;
         
         int sparsed_Hc;
+        int spin_proj; // project the vectors onto S = (mult-1)/2 (dav_par::spin_proj)
         
         
         davidson_solver();

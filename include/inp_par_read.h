@@ -53,6 +53,7 @@ class dav_par
         double se_min;
         double edshift;
         int sparsed_Hc;
+        int spin_proj;   // project the CI vectors onto S = (mult-1)/2 (any n_alp, n_bet): no triplets in a singlet run
 
         
         

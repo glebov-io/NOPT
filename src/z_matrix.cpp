@@ -43,18 +43,11 @@ int Z_matrix::init(int ext_n_at){
     if(dP!= nullptr)delete[]dP;
     
     
-    if(ext_n_at==2){
-        printf("ERROR: can not generate Z-matrix for molecule with 2 atoms\n");
-        exit(0);
-        n = new int   [1];
-        p = new double[2];
-        dP= new double[1];
-
-        return 0;
-    }
+    // fewer than 3 atoms: no internal-coordinate Z-matrix (the Cartesian input does not need one; Z-matrix driven scans and the Z-matrix numerical
+    // optimizer are unavailable). A diatomic used to stop the program here.
     n_at = ext_n_at;
     if(ext_n_at<3){
-        printf("WARNING: can not generate Z-matrix for molecule with %d atoms\n");
+        printf("WARNING: no Z-matrix for a molecule with %d atom(s) (Cartesian coordinates are used as given)\n", ext_n_at);
         n = nullptr;
         p = nullptr;
         dP= nullptr;

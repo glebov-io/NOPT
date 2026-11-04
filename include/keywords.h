@@ -60,6 +60,7 @@ extern vector<const char *>dav_group_start      ;
 extern vector<const char *>dav_se_kw            ;
 extern vector<const char *>dav_n_bf_kw          ;
 extern vector<const char *>dav_sparsed_HC_kw    ;
+extern vector<const char *>dav_spin_proj_kw     ;
 extern vector<const char *>dav_group_end        ;
 extern vector<const char *>dmrg_group_start      ;
 extern vector<const char *>dmrg_group_end        ;
