@@ -6,7 +6,7 @@ $MOL
  _UNITS= ang;
  _xyz
 16
-guanine, geometry of Bruyakin, Bochenkov, Bochenkova, JCTC 22, 8767 (2026), SI Table S3
+guanine, geometry from JCTC 22, 8767 (2026), SI Table S3
 C      0.000000000000    -2.827132420000    -5.424758309000
 N      0.000000000000    -1.758758998000    -4.575570863000
 H      0.000000000000    -0.822927268000    -4.830881393000

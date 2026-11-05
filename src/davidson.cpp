@@ -6,7 +6,6 @@
 # include "timer.h"
 # include "common_vars.h"
 # include "etc.h"
-# include "spin_projector.h"
 # include <memory>
 
 
@@ -27,7 +26,7 @@ davidson_solver::davidson_solver(){
     r     = NULL;
     Hx    = NULL;
     V_m   = NULL;
-    spin_proj = 0;
+    // spin_proj = 0;
     
 }
 
@@ -43,7 +42,7 @@ int davidson_solver::set_par(aldet_data * ext_C, dav_par dav){
     se_min    = dav.se_min;
     edshift   = dav.edshift;
     sparsed_Hc = dav.sparsed_Hc;
-    spin_proj  = dav.spin_proj;
+    // spin_proj  = dav.spin_proj;
     
     max_dim   = max_n_vec+n_bf+200;
     
@@ -253,26 +252,6 @@ int davidson_solver::run(int print, int read_states){
     V.gen_ext_ind();
     if(V.do_PT)V.PT_update();
     
-    std::unique_ptr<spin_projector> sp;
-    if(spin_proj){
-        sp.reset(new spin_projector(V));
-        if(!sp->ok){
-            fprintf(out_stream,"ERROR: spin_proj: mult=%d (S=%.1f) does not exist for n_alp=%d, n_bet=%d in %d orbitals\n",
-                    V.mult, sp->S, V.na, V.nb, V.n_act);
-            exit(1);
-        }
-        if(print){
-            fprintf(out_stream,"Spin projection onto S = %.1f (Ms = %.1f):", sp->S, (V.na - V.nb) / 2.0);
-            if(sp->parity) fprintf(out_stream," alpha-beta parity %+.0f,", sp->sym_ab);
-            if(sp->remove.empty()) fprintf(out_stream," no other spin left\n");
-            else{
-                fprintf(out_stream," removing S' =");
-                for(double r : sp->remove) fprintf(out_stream," %.1f", 0.5 * (sqrt(1 + 4 * r) - 1));
-                fprintf(out_stream,"\n");
-            }
-        }
-    }
-    
     int n = V.gen_bf(lb,n_bf);
     double * H_lb_d = nullptr;
     
@@ -283,11 +262,6 @@ int davidson_solver::run(int print, int read_states){
         V.H_mult_sparsed_to_dense(H_lb_d, lb, n);
     }
     int n_s = C->n_states[0];
-    if(sp && n_s > sp->n_states){
-        fprintf(out_stream,"ERROR: spin_proj: %d roots requested, but %d orbitals with n_alp=%d, n_bet=%d hold only %.0f states with S=%.1f\n",
-                n_s, V.n_act, V.na, V.nb, sp->n_states, sp->S);
-        exit(1);
-    }
     int dim=n;    // current dimension (k)
     int n0=0;
     
@@ -345,7 +319,7 @@ int davidson_solver::run(int print, int read_states){
         for(int i=0;i<V.Nd;i++)
         for(int j=0;j<n_s;j++)
             V.coef[0][i*max_n_vec+j]=C->coef[0][i*n_s+j];
-        if(sp) sp->project(V.coef[0], n_s, max_n_vec);
+        V.spin_project(V.coef[0], n_s, max_n_vec);
         
         dim+=n_s;
         V.transpose_ci(0);
@@ -516,15 +490,14 @@ int davidson_solver::run(int print, int read_states){
             new0=n_s;
         }
 //         printf_timer("new V");
-        if(sp && dim-n > new0){
-            sp->project(V.coef[0] + new0, dim-n-new0, max_n_vec);
-            for(int j=new0;j<dim-n;j++){
-                double nn=0;
-                for(int i=0;i<V.Nd;i++) nn+=V.coef[0][i*max_n_vec+j]*V.coef[0][i*max_n_vec+j];
-                nn = nn > 1e-16 ? 1.0/sqrt(nn) : 0.0; // a residual of the other spins only: drop it (S05 skips it)
-                for(int i=0;i<V.Nd;i++) V.coef[0][i*max_n_vec+j]*=nn;
-            }
+        V.spin_project(V.coef[0] + new0, dim-n-new0, max_n_vec);
+        for(int j=new0;j<dim-n;j++){
+            double nn=0;
+            for(int i=0;i<V.Nd;i++) nn+=V.coef[0][i*max_n_vec+j]*V.coef[0][i*max_n_vec+j];
+            nn = nn > 1e-16 ? 1.0/sqrt(nn) : 0.0; // a residual of the other spins only: drop it (S05 skips it)
+            for(int i=0;i<V.Nd;i++) V.coef[0][i*max_n_vec+j]*=nn;
         }
+        
         V.transpose_ci(0);
         if(print){
             if(V.Na==V.Nb)if(V.mult!=0){
@@ -576,10 +549,8 @@ int davidson_solver::run(int print, int read_states){
     delete[] S_bf ;
     
     //import roots to the external storage
-    if(sp){
-        sp->project(x, n_s, n_s);
-        if(print) fprintf(out_stream,"Spin projection: max |(S^2 - S(S+1)) c| over the roots = %.1e\n", sp->residual(x, n_s, n_s));
-    }
+    
+    // V.spin_project(x, n_s, n_s);
     for(int i=0;i<V.Nd;i++)
         for(int j=0;j<n_s;j++)
             C->coef[0][i*n_s+j]=x[i*n_s+j];

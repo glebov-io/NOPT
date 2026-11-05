@@ -11,6 +11,7 @@ class Z_matrix
         int * n;
         double * p;
         double * dP;
+        int n_xyz;
         double xyz_first[9];
         
         

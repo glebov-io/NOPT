@@ -29,7 +29,8 @@ Z_matrix& Z_matrix::operator= (Z_matrix& other){
     for(int i=0; i<3*n_at-6;i++) p[i]=other.p [i];
     for(int i=0; i<3*n_at-6;i++)dP[i]=other.dP[i];
     
-    for(int i=0; i<9;i++)xyz_first[i]=other.xyz_first[i];
+    n_xyz=other.n_xyz;
+    for(int i=0; i<n_xyz;i++)xyz_first[i]=other.xyz_first[i];
     
     return *this;
 }
@@ -46,22 +47,25 @@ int Z_matrix::init(int ext_n_at){
     // fewer than 3 atoms: no internal-coordinate Z-matrix (the Cartesian input does not need one; Z-matrix driven scans and the Z-matrix numerical
     // optimizer are unavailable). A diatomic used to stop the program here.
     n_at = ext_n_at;
-    if(ext_n_at<3){
-        printf("WARNING: no Z-matrix for a molecule with %d atom(s) (Cartesian coordinates are used as given)\n", ext_n_at);
-        n = nullptr;
-        p = nullptr;
-        dP= nullptr;
-
-        return 1;
-    }
+    
+    n_xyz=9;
+    if(n_at==1)n_xyz=3;
+    if(n_at==2)n_xyz=6;
+    
+    int n_coord;
+    if(n_at==1)n_coord=0;
+    if(n_at==2)n_coord=1;
+    if(n_at> 2)n_coord=3*n_at-6;
     
     
+    n = new int   [n_coord];
+    p = new double[n_coord];
+    dP= new double[n_coord];
     
-    n = new int   [3*n_at-6];
-    p = new double[3*n_at-6];
-    dP= new double[3*n_at-6];
+    if(n_at==1)return 0;
     
     n[0] = 0;
+    if(n_at==2)return 0;
     n[1] = 1;
     n[2] = 0;
     
@@ -102,9 +106,14 @@ inline double d(double * xyz, int n, int m, int k, int l){
 
 int Z_matrix::calc_Z(double * xyz){
     
-    if(n_at<3) return 0;
+    for(int i=0;i<n_xyz;i++)xyz_first[i]=xyz[i];
+    
+    if(n_at==1) return 0;
+    
     
     p[0] = r(xyz,1,n[0]);//why 1 bu not n[1]??
+    if(n_at==2) return 0;
+    
     p[1] = r(xyz,2,n[1]);
     p[2] = a(xyz,2,n[1],n[0]);
     
@@ -113,8 +122,6 @@ int Z_matrix::calc_Z(double * xyz){
         p[3*i-5]=a(xyz,i,n[3*i-6],n[3*i-5]);
         p[3*i-4]=d(xyz,i,n[3*i-6],n[3*i-5],n[3*i-4]);
     }                         
-    
-    for(int i=0;i<9;i++)xyz_first[i]=xyz[i];
     
     return 0;
 }
@@ -182,6 +189,7 @@ int Z_matrix::calc_xyz(double * xyz){
     xyz[0]=xyz_first[0];
     xyz[1]=xyz_first[1];
     xyz[2]=xyz_first[2];
+    if(n_at==1)return 0;
     double l =(xyz_first[0]-xyz_first[3])*(xyz_first[0]-xyz_first[3])+
               (xyz_first[1]-xyz_first[4])*(xyz_first[1]-xyz_first[4])+
               (xyz_first[2]-xyz_first[5])*(xyz_first[2]-xyz_first[5]);
@@ -190,28 +198,18 @@ int Z_matrix::calc_xyz(double * xyz){
     xyz[3]=xyz_first[0]+(xyz_first[3]-xyz_first[0])*p[0]/l;
     xyz[4]=xyz_first[1]+(xyz_first[4]-xyz_first[1])*p[0]/l;
     xyz[5]=xyz_first[2]+(xyz_first[5]-xyz_first[2])*p[0]/l;
-    
-    xyz[ 9]=xyz_first[6];//tmp atom - copy of atom 2
-    xyz[10]=xyz_first[7];//tmp atom - copy of atom 2
-    xyz[11]=xyz_first[8];//tmp atom - copy of atom 2
-    add_atom(xyz,2,1,0,3,p[1],p[2],0,e);
+    if(n_at>2){
+        xyz[ 9]=xyz_first[6];//tmp atom - copy of atom 2
+        xyz[10]=xyz_first[7];//tmp atom - copy of atom 2
+        xyz[11]=xyz_first[8];//tmp atom - copy of atom 2
+        add_atom(xyz,2,1,0,3,p[1],p[2],0,e);
 
+        for(int i=3;i<n_at;i++)
+            add_atom(xyz,i,n[3*i-6],n[3*i-5],n[3*i-4]
+                          ,p[3*i-6],p[3*i-5],p[3*i-4],e);
+    }
     
-    
-    
-//     add_shitfted_atom(xyz, 2, n[1], x, y, z);
-    
-//     add_atom(xyz,3,2,1,0,p[3],p[4],p[5],e);
-    
-    for(int i=3;i<n_at;i++)
-        add_atom(xyz,i,n[3*i-6],n[3*i-5],n[3*i-4]
-                      ,p[3*i-6],p[3*i-5],p[3*i-4],e);
-//         p[3*i-6]=r(xyz,i,n[3*i-6]);
-//         p[3*i-5]=a(xyz,i,n[3*i-6],n[3*i-5]);
-//         p[3*i-4]=d(xyz,i,n[3*i-6],n[3*i-5],n[3*i-4]);
-//     }                         
-    
-    for(int i=0;i<9;i++)xyz_first[i]=xyz[i];//update xyz_first
+    for(int i=0;i<n_xyz;i++)xyz_first[i]=xyz[i];//update xyz_first
     
     return 0;
 }
@@ -219,7 +217,9 @@ int Z_matrix::calc_xyz(double * xyz){
 
 int Z_matrix::print(){
     
+    if(n_at==1)return 0;
     fprintf(out_stream,"r(%d,%d) = %.4f\n",   1,n[0],p[0]/1.889725989);
+    if(n_at==2)return 0;
     fprintf(out_stream,"r(%d,%d) = %.4f\n",   2,n[1],p[1]/1.889725989);
     fprintf(out_stream,"a(%d,%d,%d) = %.4f\n",2,n[1],n[0],p[2]/M_PI*180);
     
@@ -252,7 +252,9 @@ int Z_matrix::set_deriv_step(double dR, double dA, double dD){
     
 //     if(dP==nullptr)dP= new double[3*n_at-6];
     
+    if(n_at==1)return 0;
     dP[0] = dR;
+    if(n_at==2)return 0;
     dP[1] = dR;
     dP[2] = dA;
     
@@ -334,8 +336,6 @@ int Z_matrix::read_line(char * inp_line, int i){
 
 int Z_matrix::read_xyz(char * inp_line, int i){
     
-//     printf("read_xyz is not written\n");
-//     printf("%s\n",inp_line);
     int n;
     sscanf(inp_line,"%d %lf %lf %lf", &n, xyz_first+3*i, xyz_first+3*i+1, xyz_first+3*i+2);
     if(n!=i){
@@ -354,10 +354,11 @@ int Z_matrix::read_xyz(char * inp_line, int i){
 
 int Z_matrix::scale_R(double au_coef){
     
-    if(n_at<3)return 0;
-    
+    if(n_at==1)return 0;
     p[0] = p[0]*au_coef;
+    if(n_at==2)return 0;
     p[1] = p[1]*au_coef;
+    p[2] = p[2]*au_coef;
     
     for(int i=3;i<n_at;i++){
         p[3*i-6]=p[3*i-6]*au_coef;

@@ -176,7 +176,7 @@ vector<const char *>dav_n_bf_kw{{"n_bf"}};
 
 vector<const char *>dav_sparsed_HC_kw{{"sparsed_hc"}};
 
-vector<const char *>dav_spin_proj_kw{{"spin_proj"}};
+// vector<const char *>dav_spin_proj_kw{{"spin_proj"}};
                           
 vector<const char *>dav_group_end{{"dav_end"},
                                   {"davend"},

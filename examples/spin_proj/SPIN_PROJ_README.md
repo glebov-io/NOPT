@@ -45,8 +45,7 @@ and after the final roots the largest |(S^2 - S(S+1)) c| over them (about 1e-16)
 
 ## Example
 
-`guanine_sa4.inp` is guanine with SA-4 CAS(10,10)/cc-pVDZ, RI, at the geometry of Y. V. Bruyakin, V. E. Bochenkov,
-A. V. Bochenkova, J. Chem. Theory Comput. 2026, 22, 8767 (SI Table S3).
+`guanine_sa4.inp` is guanine with SA-4 CAS(10,10)/cc-pVDZ, RI, at the geometry from J. Chem. Theory Comput. 2026, 22, 8767 (SI Table S3).
 
 | | S^2 of the four SA roots | CAS-SCF energies (Eh) |
 |---|---|---|

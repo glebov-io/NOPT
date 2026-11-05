@@ -434,13 +434,15 @@ int molecule::geom_read(){
             exit(0);
         }
         in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,0);
-        in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,1);
-        in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,2);
+        z.read_xyz(line,0);if(n_atoms>1){
+            in.r_smart_fgets(line,&line_num,source_name,"reading atom");
+            z.read_xyz(line,1);if(n_atoms>2){
+                in.r_smart_fgets(line,&line_num,source_name,"reading atom");
+                z.read_xyz(line,2);
+            }
+        }
     }
-    fprintf(out_stream,"\nWARNING: read_cl is blocked in the 3.0 version\n\n");
+    // fprintf(out_stream,"\nWARNING: read_cl is blocked in the 3.0 version\n\n");
     //read_cl(&in);
     
     n_el_full-=mol_charge;
