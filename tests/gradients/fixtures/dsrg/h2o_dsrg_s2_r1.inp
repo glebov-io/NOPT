@@ -1,0 +1,17 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=1 CAS=1 DSRG=1 D5=1 RI=1 NAME=h2o_dsrg_s2 $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvdz;
+ _RI_BASIS=cc-pvdz-ri;
+ _UNITS= ang;
+ _xyz
+3
+distorted h2o
+O 0.000000 0.020000 0.117790
+H 0.050000 0.755453 -0.471161
+H 0.000000 -0.700000 -0.471161
+$act_space n_alp=2 n_bet=2 n_val=4 mult=1 p_n=10; $end
+$END
+$RHF maxit=100 dE=1e-14 grad=1e-9 $END
+$CAS n_s=2 w_state=1 1; maxit=300 dE=1e-15 grad=1e-10 step=1e-11 p_cutoff=0.03 $END
+$dsrg s=0.5 root=1 $end

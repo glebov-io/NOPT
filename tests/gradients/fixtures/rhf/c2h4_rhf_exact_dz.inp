@@ -1,0 +1,17 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=1 CAS=0 D5=1 RI=0 NAME=c2h4 $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvdz;
+ _UNITS= ang;
+ _xyz
+6
+ethylene, distorted (screened shell sets; exact ERIs)
+C -1.838032  0.119616  0.010000
+C -0.606222 -0.412002  0.000000
+H -1.989584  1.191252 -0.030000
+H -2.716654 -0.508244  0.010000
+H -0.476871 -1.478861  0.000000
+H  0.346222  0.122002  0.020000
+$act_space n_alp=2 n_bet=2 n_val=4 mult=1 p_n=10; $end
+$END
+$RHF maxit=300 dE=-1 grad=1e-9 $END

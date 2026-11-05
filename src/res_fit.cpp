@@ -1,3 +1,7 @@
+#include <cstring>
+#include <cstdlib>
+#include <vector>
+#include <algorithm>
 # include <stdio.h>
 # include "blas_link.h"
 # include <omp.h>
@@ -199,8 +203,24 @@ int res_fit_data::gen_grid(int ext_N_fit, int ext_n_fit_pol){
     RF_PV    = new double  [n_a*n_a*n_a*n_a        *N_fit];
     RF_PV_JK = new double  [n_a*n_a*n_a*n_a        *N_fit];
     RF_PV_AB = new double  [n_a*n_a*n_a*n_a        *N_fit];
-    RF_P3_JK = new double  [n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_AB = new double  [n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
+    RF_P3_JK = nullptr;
+    RF_P3_AB = nullptr;
+    if(full_tables){
+        RF_P3_JK = new double  [(size_t)n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
+        RF_P3_AB = new double  [(size_t)n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
+    }
+    win_f0 = 0; win_nf = N_fit;
+    // E_act[i,j] = Ea(i) + Eb(j): the stencil start S[i,j,s] grows as Eb(j) (Ea(i)) falls, the same for every i (j) and state
+    {
+        const int Na = ci->Na, Nb = ci->Nb;
+        const double * Ea = ci->E_act[0];
+        order_b.resize(Nb); order_a.resize(Na);
+        for(int j=0;j<Nb;j++) order_b[j]=j;
+        for(int i=0;i<Na;i++) order_a[i]=i;
+        std::stable_sort(order_b.begin(), order_b.end(), [&](int x, int y){ return Ea[x] > Ea[y]; });            // Eb(j) = E_act[0,j] - E_act[0,0]
+        std::stable_sort(order_a.begin(), order_a.end(), [&](int x, int y){ return Ea[(size_t)x*Nb] > Ea[(size_t)y*Nb]; });   // Ea(i)
+    }
+    build_rep_lists();
 
     return 0;
 }
@@ -493,7 +513,9 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
                            double * ci,
                            int N,int na, int Na, int Nb, int * fa, int * vec_a,
                            double * RF, int * L_fit, int * S_fit, double * C_fit, int N_fit,
-                           int i_th, int n_th){
+                           int i_th, int n_th, int f0, int nw, const int * order){
+    // RF holds the grid points f0 .. f0 + nw - 1 (stride nw); only the part of each interpolation stencil inside them is added. order: the
+    // strings of the inner index sorted so that the stencil start S grows along them, the same for every outer string and state.
     
 //     printf("3 body AAA is not written\n");
 //     exit(0);
@@ -518,7 +540,20 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
     double * CI_0;
     double * CI_e;
     
+    std::vector<int> klo(n_s), khi(n_s);
     for(int i_CI =i_th; i_CI<Na; i_CI+=n_th){//fprintf(stderr,"AV(2-body-sym) i_CI=%d  (thread %d)        \r",i_CI, i_th);
+        // the inner strings whose stencil can touch the window: S in [f0 - (2 n_fit_pol + 1), f0 + nw), one string of slack for rounding
+        bool any=false;
+        for(int i_s=0;i_s<n_s;i_s++){
+            auto Sk=[&](int k){ return S_fit[((long)i_CI*Nb+order[k])*n_s+i_s]; };
+            int lo=0, hi=Nb;
+            while(lo<hi){ int m=(lo+hi)/2; if(Sk(m) < f0-(2*n_fit_pol+1)) lo=m+1; else hi=m; }
+            int lo2=lo, hi2=Nb;
+            while(lo2<hi2){ int m=(lo2+hi2)/2; if(Sk(m) < f0+nw) lo2=m+1; else hi2=m; }
+            klo[i_s]=lo>0?lo-1:0; khi[i_s]=lo2<Nb?lo2+1:Nb;
+            if(klo[i_s]<khi[i_s]) any=true;
+        }
+        if(!any) continue;
         
         memset(bit_a,0,N*sizeof(int));
         for (int k=1; k<na+1; k++) bit_a[vec_a[i_CI*(na+1)+k]-1] = 1;
@@ -545,15 +580,18 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
                                             
                                             auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
                                             sign=sign1*sign2*sign3*sign4;
-                                            R = RF+(((((t*N+u)*N+v)*N+y)*N+x)*N+w)*N_fit;
-                                            for(int j_CI = 0; j_CI<Nb; j_CI++)
-                                            for(int i_s=0;i_s<n_s;i_s++){
-                                                Rc =0;
+                                            R = RF+(long)(((((t*N+u)*N+v)*N+y)*N+x)*N+w)*nw - f0;   // R[f] for f in the window
+                                            for(int i_s=0;i_s<n_s;i_s++)
+                                            for(int k=klo[i_s]; k<khi[i_s]; k++){
+                                                const int j_CI = order[k];
                                                 L = L_fit[(i_CI*Nb+j_CI)*n_s+i_s];
                                                 S = S_fit[(i_CI*Nb+j_CI)*n_s+i_s];
+                                                const int k0 = S<f0 ? f0-S : 0, k1 = S+L>f0+nw ? f0+nw-S : L;
+                                                if(k0>=k1) continue;
                                                 C = C_fit+(2*n_fit_pol+1)*((i_CI*Nb+j_CI)*n_s+i_s);
                                                 //<tu|wa>*P[a,v]-<tu|va>*P[a,w] to be checked
-                                                Rc+=ddot(L,R+S, 1, C, 1);
+                                                Rc =0;
+                                                for(int q=k0;q<k1;q++) Rc+=R[S+q]*C[q];
                                                 CI_0 = ci+(i_CI*Nb+j_CI)*ld;
                                                 Rc =Rc*CI_0[i_s]*sign;
                                                 CI_e = ci+(i_CIext*Nb+j_CI)*ld;
@@ -597,117 +635,128 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
 //     y_b '
 //     
 //     t-u-v-w-x-y
+// the doubles E_tu E_vw (t < u occupied, v < w empty after removing t, u) of every string, signs as res_fit_calc_3body_AB accumulates them
+static void rf_build_doubles(rf_rep_list & L, int N, int n, int Ns, const int * vec, int * f){
+    std::vector<int> bit(N), buf(n + 2, 0);
+    L.off.assign(Ns + 1, 0); L.ext.clear(); L.orb.clear(); L.sgn.clear();
+    for(int i = 0; i < Ns; i++){
+        std::fill(bit.begin(), bit.end(), 0);
+        for(int k = 1; k < n + 1; k++) bit[vec[i * (n + 1) + k] - 1] = 1;
+        for(int t = 0; t < N; t++) if(bit[t]){
+            bit[t] = 0; int s1 = 1;
+            for(int u = t + 1; u < N; u++) if(bit[u]){
+                bit[u] = 0; int s2 = 1;
+                for(int v = 0; v < N; v++){
+                    if(!bit[v]){
+                        bit[v] = 1; int s5 = s2;
+                        for(int w = v + 1; w < N; w++){
+                            if(!bit[w]){
+                                bit[w] = 1;
+                                L.ext.push_back(get_ind_from_ON(bit.data(), N, n, f, buf.data()));
+                                L.orb.push_back(((t * N + u) * N + v) * N + w);
+                                L.sgn.push_back((signed char)(s1 * s2 * s5));
+                                bit[w] = 0;
+                            }
+                            else s5 = -s5;
+                        }
+                        bit[v] = 0;
+                    }
+                    else s2 = -s2;
+                }
+                bit[u] = 1; s1 = -s1;
+            }
+            bit[t] = 1;
+        }
+        L.off[i + 1] = (long)L.ext.size();
+    }
+}
+// the singles E_xy (x occupied, y empty after removing x)
+static void rf_build_singles(rf_rep_list & L, int N, int n, int Ns, const int * vec, int * f){
+    std::vector<int> bit(N), buf(n + 2, 0);
+    L.off.assign(Ns + 1, 0); L.ext.clear(); L.orb.clear(); L.sgn.clear();
+    for(int i = 0; i < Ns; i++){
+        std::fill(bit.begin(), bit.end(), 0);
+        for(int k = 1; k < n + 1; k++) bit[vec[i * (n + 1) + k] - 1] = 1;
+        int s4 = 1;
+        for(int x = 0; x < N; x++) if(bit[x]){
+            bit[x] = 0; int s6 = 1;
+            for(int y = 0; y < N; y++){
+                if(!bit[y]){
+                    bit[y] = 1;
+                    L.ext.push_back(get_ind_from_ON(bit.data(), N, n, f, buf.data()));
+                    L.orb.push_back(x * N + y);
+                    L.sgn.push_back((signed char)(s4 * s6));
+                    bit[y] = 0;
+                }
+                else s6 = -s6;
+            }
+            bit[x] = 1; s4 = -s4;
+        }
+        L.off[i + 1] = (long)L.ext.size();
+    }
+}
+
+int res_fit_data::build_rep_lists(){
+    if(!dbl_a.off.empty()) return 0;
+    rf_build_doubles(dbl_a, n_a, ci->na, ci->Na, ci->vec_a, ci->fa);
+    rf_build_singles(sgl_b, n_a, ci->nb, ci->Nb, ci->vec_b, ci->fb);
+    rf_build_doubles(dbl_b, n_a, ci->nb, ci->Nb, ci->vec_b, ci->fb);
+    rf_build_singles(sgl_a, n_a, ci->na, ci->Na, ci->vec_a, ci->fa);
+    return 0;
+}
+
 int res_fit_calc_3body_AB(double * P, int n_s, int ld,
                           double * ci,
-                          int N,int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b,
+                          int N,int na, int nb, int Na, int Nb,
+                          const rf_rep_list & D, const rf_rep_list & S1,
                           double * RF, int * L_fit, int * S_fit, double * C_fit, int N_fit,
-                          int i_th, int n_th){
-    
-    int * bit_a = new int [N];
-    int * bit_b = new int [N];
-    int * buf = new int [na + 1];//more space for +a-b and -a+b
-    buf[0]=0;
-    
-    double sign ;
-    double sign1;
-    double sign2;
-    double sign3;
-    double sign4;
-    double sign5;
-    double sign6;
-    
-    
-    double Rc;
-    
-    double * R;
-    int L;
-    int S;
-    double * C;
-    double * CI_0;
-    double * CI_e;
-
-    //fprintf(stderr,"\n");
-    for (int i_CI = i_th; i_CI<Na; i_CI+=n_th)/// must be optimized!!!!!!!
-    for (int j_CI = 0; j_CI<Nb; j_CI++){//fprintf(stderr,"\r3b CI=%d/%d          \n",i_CI*Nb+j_CI,Na*Nb);
-//         getchar();
-
-        memset(bit_a,0,N*sizeof(int));
-        memset(bit_b,0,N*sizeof(int));
-        
-        for (int k=1; k<na+1; k++) bit_a[vec_a[i_CI*(na+1)+k]-1] = 1;
-        for (int k=1; k<nb+1; k++) bit_b[vec_b[j_CI*(nb+1)+k]-1] = 1;
-        
-        for(int t=0  ;t<N;t++){
-            if(bit_a[t]!=0){
-                bit_a[t]=0;
-                sign1=1;
-                for(int u=t+1;u<N;u++)if(bit_a[u]!=0){
-                    bit_a[u]=0;
-                    sign2=1;
-                    for(int v=0;v<N;v++){
-                        if(bit_a[v]==0){
-                            bit_a[v]=1;
-                            sign5=sign2;
-                            for(int w=v+1  ;w<N;w++){
-                                if(bit_a[w]==0){
-                                    bit_a[w]=1;
-                                    sign4=1;
-                                    for(int x=0  ;x<N;x++)if(bit_b[x]!=0){
-                                        bit_b[x]=0;
-                                        sign6=1;
-                                        for(int y=0  ;y<N;y++){
-                                            if(bit_b[y]==0){
-                                                bit_b[y]=1;
-                                                auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
-                                                auto j_CIext = get_ind_from_ON(bit_b, N, nb, fb, buf);
-                                                
-                                                sign=sign1*sign2*sign4*sign5*sign6;
-                                                
-                                                R = RF+(((((t*N+u)*N+v)*N+w)*N+x)*N+y)*N_fit;
-                                                for(int i_s=0;i_s<n_s;i_s++){
-                                                    Rc =0;
-                                                    L = L_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    S = S_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    C = C_fit+(2*n_fit_pol+1)*((i_CI*Nb+j_CI)*n_s+i_s);
-                                                    Rc+=ddot(L,R+S, 1, C, 1);
-                                                    CI_0 = ci+(i_CI*Nb+j_CI)*ld;
-                                                    Rc =Rc*CI_0[i_s]*sign;
-                                                    CI_e = ci+(i_CIext*Nb+j_CIext)*ld;
-                                                    for(int j_s=0;j_s<n_s;j_s++)
-                                                        P[i_s*n_s+j_s]+=Rc*CI_e[j_s];
-                                                }
-                                                bit_b[y]=0;
-                                                
-                                            }
-                                            else
-                                                sign6=-sign6;
-                                        }
-                                        bit_b[x]=1;
-                                        sign4=-sign4;
-                                    }
-                                    bit_a[w]=0;
-                                }
-                                else
-                                    sign5=-sign5;
-                            }
-                            bit_a[v]=0;
-                        }
-                        else
-                            sign2=-sign2;
-                    }
-                    bit_a[u]=1;
-                    sign1=-sign1;
+                          int i_th, int n_th, int f0, int nw){
+    // E_tu E_vw (alpha) E_xy (beta) on every determinant (i, j): the replacements come from the lists D (doubles of the outer strings) and S1 (singles
+    // of the inner strings), in the order of the former nested loops (t, u, v, w outer, x, y inner), so the sums are the same.
+    // RF holds the grid points f0 .. f0 + nw - 1 (stride nw): a determinant none of whose stencils touches them is skipped
+    const long N2 = (long)N * N;
+    std::vector<int> Ss(n_s), k0s(n_s), k1s(n_s), live(n_s);
+    std::vector<const double *> Cs(n_s);
+    for (int i_CI = i_th; i_CI<Na; i_CI+=n_th)
+    for (int j_CI = 0; j_CI<Nb; j_CI++){
+        {
+            bool any=false;
+            for(int i_s=0;i_s<n_s&&!any;i_s++){
+                const int Sd=S_fit[(i_CI*Nb+j_CI)*n_s+i_s], Ld=L_fit[(i_CI*Nb+j_CI)*n_s+i_s];
+                any = Sd<f0+nw && Sd+Ld>f0;
+            }
+            if(!any) continue;
+        }
+        const long det = (long)i_CI*Nb+j_CI;
+        const double * CI_0 = ci + det*ld;
+        // the stencils of this determinant clipped to the window, and the factors CI_0[i_s]
+        int ns_live = 0;
+        for(int i_s=0;i_s<n_s;i_s++){
+            const int L = L_fit[det*n_s+i_s], S = S_fit[det*n_s+i_s];
+            const int k0 = S<f0 ? f0-S : 0, k1 = S+L>f0+nw ? f0+nw-S : L;
+            if(k0>=k1) continue;
+            live[ns_live]=i_s; Ss[ns_live]=S; k0s[ns_live]=k0; k1s[ns_live]=k1; Cs[ns_live]=C_fit+(2*n_fit_pol+1)*(det*n_s+i_s); ns_live++;
+        }
+        for(long a = D.off[i_CI]; a < D.off[i_CI+1]; a++){
+            const long ia = D.ext[a];
+            const long oa = (long)D.orb[a]*N2;
+            const double sa = D.sgn[a];
+            for(long b = S1.off[j_CI]; b < S1.off[j_CI+1]; b++){
+                const double sign = sa*S1.sgn[b];
+                const double * R = RF + (oa + S1.orb[b])*nw - f0;   // R[f] for f in the window
+                const double * CI_e = ci + (ia*Nb + S1.ext[b])*ld;
+                for(int q=0;q<ns_live;q++){
+                    const int i_s=live[q], S=Ss[q];
+                    const double * C=Cs[q];
+                    double Rc=0;
+                    for(int l=k0s[q];l<k1s[q];l++) Rc+=R[S+l]*C[l];
+                    Rc=Rc*CI_0[i_s]*sign;
+                    for(int j_s=0;j_s<n_s;j_s++)
+                        P[i_s*n_s+j_s]+=Rc*CI_e[j_s];
                 }
-                bit_a[t]=1;
             }
         }
     }
-    
-    delete[] bit_b;
-    delete[] bit_a;
-    delete[] buf;
-
-    
     return 0;
 }
 
@@ -791,7 +840,7 @@ int res_fit_data::calc_3body_AAA(double * E2, int i_th, int n_th){
                            ci->coef[0],
                            n_a,ci->na, ci->Na, ci->Nb, ci->fa, ci->vec_a,
                            RF_P3_JK, L_fit, S_fit, C_fit, N_fit,
-                           i_th, n_th);
+                           i_th, n_th, win_f0, win_nf, order_b.data());
     
     return 0;
     
@@ -804,7 +853,7 @@ int res_fit_data::calc_3body_BBB(double * E2, int i_th, int n_th){
                            ci->coef_bas[0],
                            n_a,ci->nb, ci->Nb, ci->Na, ci->fb, ci->vec_b,
                            RF_P3_JK, L_fit_tr, S_fit_tr, C_fit_tr, N_fit,
-                           i_th, n_th);
+                           i_th, n_th, win_f0, win_nf, order_a.data());
     return 0;
     
 }
@@ -814,9 +863,9 @@ int res_fit_data::calc_3body_AAB(double * E2, int i_th, int n_th){
     
     res_fit_calc_3body_AB(E2, n_s, n_s,
                           ci->coef[0],
-                          n_a,ci->na, ci->nb, ci->Na, ci->Nb, ci->fa, ci->fb, ci->vec_a, ci->vec_b,
+                          n_a,ci->na, ci->nb, ci->Na, ci->Nb, dbl_a, sgl_b,
                           RF_P3_AB, L_fit, S_fit, C_fit, N_fit,
-                          i_th, n_th);    
+                          i_th, n_th, win_f0, win_nf);    
     
     return 0;
     
@@ -826,20 +875,107 @@ int res_fit_data::calc_3body_ABB(double * E2, int i_th, int n_th){
     
     res_fit_calc_3body_AB(E2, n_s, n_s,
                           ci->coef_bas[0],
-                          n_a,ci->nb, ci->na, ci->Nb, ci->Na, ci->fb, ci->fa, ci->vec_b, ci->vec_a,
+                          n_a,ci->nb, ci->na, ci->Nb, ci->Na, dbl_b, sgl_a,
                           RF_P3_AB, L_fit_tr, S_fit_tr, C_fit_tr, N_fit,
-                          i_th, n_th);    
+                          i_th, n_th, win_f0, win_nf);    
     
     return 0;
     
 }
 
 
+bool res_fit_data::block_used(const char * b){
+    const char * blk = getenv("NOPT_XMC_BLOCKS");
+    if(!(blk && *blk)) return true;
+    const size_t lb = strlen(b);
+    for(const char * p = blk; *p; ){
+        const char * q = strchr(p, ','); const size_t l = q ? (size_t)(q - p) : strlen(p);
+        if(l == lb && !strncmp(p, b, lb)) return true;
+        if(!q) break; p = q + 1;
+    }
+    return false;
+}
+
+int res_fit_data::window_points() const {
+    // per grid point: the windows of the two three-body tables and the three AV intermediates of the same size
+    const double n6 = (double)n_a*n_a*n_a*n_a*n_a*n_a;
+    double mb = 4096.0;
+    if(getenv("NOPT_XMC_WINDOW_MB") && *getenv("NOPT_XMC_WINDOW_MB")) mb = atof(getenv("NOPT_XMC_WINDOW_MB"));
+    int W = (int)(mb * 1048576.0 / (5.0 * 8.0 * n6));
+    if(W < 1) W = 1;
+    if(W > N_fit) W = N_fit;
+    return W;
+}
+
+int res_fit_data::build_P3_window(int f0, int nw, double * JK, double * AB){
+    const size_t n2 = (size_t)n_a*n_a, n4 = n2*n2, n6 = n4*n2;
+    std::vector<double> sPS(N_fit, 0.0), sPH(n2*N_fit, 0.0), sPVJ(n4*N_fit, 0.0), sPVA(n4*N_fit, 0.0);
+    double * keep[4] = {RF_PS, RF_PH, RF_PV_JK, RF_PV_AB};
+    double * keep3[2] = {RF_P3_JK, RF_P3_AB};
+    RF_PS = sPS.data(); RF_PH = sPH.data(); RF_PV_JK = sPVJ.data(); RF_PV_AB = sPVA.data();
+    std::fill(JK, JK + n6*nw, 0.0); std::fill(AB, AB + n6*nw, 0.0);
+    RF_P3_JK = JK; RF_P3_AB = AB;
+    win_f0 = f0; win_nf = nw;
+    if(block_used("AV")) calc_RF_2_AV();
+    if(block_used("CA")) calc_RF_2_CA();
+    win_f0 = 0; win_nf = N_fit;
+    RF_PS = keep[0]; RF_PH = keep[1]; RF_PV_JK = keep[2]; RF_PV_AB = keep[3];
+    RF_P3_JK = keep3[0]; RF_P3_AB = keep3[1];
+    return 0;
+}
+
+int res_fit_data::E2_windows(double ** E2_th, bool av, bool ca){
+    // AV and CA build the three-body tables (and add to the four-index ones); the three-body contraction reads them. All of it is pointwise in the
+    // grid, so it runs window by window: only the window of the two three-body tables and the AV intermediates (three more of the same size)
+    // exist at a time. With full_tables a single window covers the grid and the tables stay.
+    const size_t n6 = (size_t)n_a*n_a*n_a*n_a*n_a*n_a;
+    const int W = full_tables ? N_fit : window_points();
+    std::vector<double> wJK, wAB;
+    double t_av = 0, t_ca = 0, t_3 = 0, t_kind[4] = {0, 0, 0, 0};
+    int n_win = 0;
+    for(int f0 = 0; f0 < N_fit; f0 += W){
+        win_f0 = f0; win_nf = (N_fit - f0 < W) ? N_fit - f0 : W;
+        if(full_tables){
+            set_zero_matr(RF_P3_JK, n6*N_fit);
+            set_zero_matr(RF_P3_AB, n6*N_fit);
+        }
+        else{
+            wJK.assign(n6*win_nf, 0.0); wAB.assign(n6*win_nf, 0.0);
+            RF_P3_JK = wJK.data(); RF_P3_AB = wAB.data();
+        }
+        double t0 = omp_get_wtime();
+        if(av) calc_RF_2_AV();
+        t_av += omp_get_wtime() - t0; t0 = omp_get_wtime();
+        if(ca) calc_RF_2_CA();
+        t_ca += omp_get_wtime() - t0; t0 = omp_get_wtime();
+        // the four kinds one after the other (each on all threads), timed separately
+        for(int kind = 0; kind < 4; kind++){
+            const double tk = omp_get_wtime();
+            #pragma omp parallel
+            {
+                const int nt = omp_get_thread_num();
+                std::vector<double> E2_loc((size_t)n_s*n_s, 0.0);
+                if(kind == 0) calc_3body_AAA(E2_loc.data(), nt, num_threads);
+                if(kind == 1) calc_3body_AAB(E2_loc.data(), nt, num_threads);
+                if(kind == 2) calc_3body_ABB(E2_loc.data(), nt, num_threads);
+                if(kind == 3) calc_3body_BBB(E2_loc.data(), nt, num_threads);
+                for(int i = 0; i < n_s*n_s; i++) E2_th[nt][i] += E2_loc[i];
+            }
+            t_kind[kind] += omp_get_wtime() - tk;
+        }
+        t_3 += omp_get_wtime() - t0;
+        n_win++;
+    }
+    if(!full_tables){ RF_P3_JK = nullptr; RF_P3_AB = nullptr; }
+    win_f0 = 0; win_nf = N_fit;
+    fprintf(out_stream, "AV and CA res tables and the 3-body PT operators in %d window(s) of up to %d grid points (%.0f MB per window): "
+                        "AV %.2f s, CA %.2f s, 3-body %.2f s\n", n_win, W, 5.0*8.0*(double)n6*W/1048576.0, t_av, t_ca, t_3);
+    fprintf(out_stream, "3-body PT operators: AAA %.2f s, AAB %.2f s, ABB %.2f s, BBB %.2f s\n", t_kind[0], t_kind[1], t_kind[2], t_kind[3]);
+    printf_timer("AV, CA res tables and 3-body PT operators");printf("\n");fflush(stdout);
+    return 0;
+}
+
 int res_fit_data::E2_calc(double * E2){
-    
-        
-    set_zero_matr(RF_P3_JK, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_AB, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
     
     set_zero_matr(RF_PV_JK, n_a*n_a*n_a*n_a*N_fit);
     set_zero_matr(RF_PV_AB, n_a*n_a*n_a*n_a*N_fit);
@@ -848,19 +984,23 @@ int res_fit_data::E2_calc(double * E2){
     
     set_zero_matr(RF_PS, N_fit);
     
-    calc_RF_2_CCVV();printf_timer("CCVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CAVV();printf_timer("CAVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_AAVV();printf_timer("AAVV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CCAV();printf_timer("CCAV res table");printf("\n");fflush(stdout);
-    calc_RF_2_CCAA();printf_timer("CCAA res table");printf("\n");fflush(stdout);
-    calc_RF_2_CV  ();printf_timer("CV   res table");printf("\n");fflush(stdout);
-    calc_RF_2_AV  ();printf_timer("AV   res table");printf("\n");fflush(stdout);
-    calc_RF_2_CA  ();printf_timer("CA   res table");printf("\n");fflush(stdout);
-    
+    // test switch: NOPT_XMC_BLOCKS=CCVV,CV,... keeps only the listed classes (exact names, comma separated; default: all eight)
+    const char * blk = getenv("NOPT_XMC_BLOCKS");
+    auto use = [](const char * b){ return block_used(b); };
+    if(blk && *blk) fprintf(out_stream, "TEST: XMC PT classes restricted to %s\n", blk);
+    if(use("CCVV")){calc_RF_2_CCVV();printf_timer("CCVV res table");printf("\n");fflush(stdout);}
+    if(use("CAVV")){calc_RF_2_CAVV();printf_timer("CAVV res table");printf("\n");fflush(stdout);}
+    if(use("AAVV")){calc_RF_2_AAVV();printf_timer("AAVV res table");printf("\n");fflush(stdout);}
+    if(use("CCAV")){calc_RF_2_CCAV();printf_timer("CCAV res table");printf("\n");fflush(stdout);}
+    if(use("CCAA")){calc_RF_2_CCAA();printf_timer("CCAA res table");printf("\n");fflush(stdout);}
+    if(use("CV"))  {calc_RF_2_CV  ();printf_timer("CV   res table");printf("\n");fflush(stdout);}
     
     double **E2_th= new double * [num_threads];
     for(int i=0;i<num_threads;i++)E2_th[i]=new double[n_s*n_s];
     for(int i=0;i<num_threads;i++)set_zero_matr(E2_th[i],n_s*n_s);
+
+    // AV, CA (they complete the four-index tables too) and the three-body contraction, by windows of the grid
+    E2_windows(E2_th, use("AV"), use("CA"));
 
     #pragma omp parallel
     {
@@ -875,17 +1015,13 @@ int res_fit_data::E2_calc(double * E2){
         calc_2body_AA (E2_loc, nt, num_threads);
         calc_2body_AB (E2_loc, nt, num_threads);
         calc_2body_BB (E2_loc, nt, num_threads);
-        calc_3body_AAA(E2_loc, nt, num_threads);
-        calc_3body_AAB(E2_loc, nt, num_threads);
-        calc_3body_ABB(E2_loc, nt, num_threads);
-        calc_3body_BBB(E2_loc, nt, num_threads);
                 
         for(int i_s=0;i_s<n_s*n_s;i_s++)
-            E2_th[nt][i_s]=E2_loc[i_s];
+            E2_th[nt][i_s]+=E2_loc[i_s];
         delete[] E2_loc;
     }
     
-    printf_timer("0-3 body PT operators");printf("\n");fflush(stdout);
+    printf_timer("0-2 body PT operators");printf("\n");fflush(stdout);
     
     for(int i_s=0;i_s<n_s*n_s;i_s++)
     for(int i=0;i<num_threads;i++)
@@ -957,172 +1093,76 @@ int res_fit_data::calc_RF_2_CV(){
                         RI->VA_RI_M,RI->aux_n_ao,0.0,
                         CAVA,n_a*n_v);
 
+    // For every output row (t,u), sums over the pairs (i,a) as matrix products, the denominator D(i,a,t,u; f) = dE/(dE^2 + s) with
+    // dE = e_i + e_t - e_a - e_u + E_fit[f] folded into the left factor:
+    //   RF_X[t,u,v,w,f] += sum_ia R_X[ia,(v,w)] L_X[ia,(t,u)] D(i,a,t,u;f)
+    // with L_A = (iu|at), L_M = (ai|tu) - (iu|at), L_J = (ai|tu) and R_A = (iv|aw), R_M = (ai|wv) - (iv|aw), R_J = (ai|wv):
+    //   AB = A.A, MM = M.M, MJ = M.J, JM = J.M, JJ = J.J.
+    // The H terms: RF_MH, RF_JH[t,u,f] += sum_ia H_ia L_{M,J}[ia,(t,u)] D(i,a,t,u;f) in the same rows; RF_HM, RF_HJ (denominator e_i - e_a) as one product.
+    {
+        const int n2 = n_a*n_a, nia = n_c*n_v;
+        std::vector<double> LA((size_t)nia*n2), LM((size_t)nia*n2), LJ((size_t)nia*n2), RA((size_t)nia*n2), RM((size_t)nia*n2), RJ((size_t)nia*n2);
+        for(int i=0; i<n_c; i++) for(int a=0; a<n_v; a++){
+            const size_t r=(size_t)(i*n_v+a)*n2;
+            for(int t=0; t<n_a; t++) for(int u=0; u<n_a; u++){
+                // left factor at (t,u)
+                LA[r+t*n_a+u]=CAVA[((i*n_a+u)*n_v+a)*n_a+t];
+                LJ[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t];
+                LM[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t]-CAVA[((i*n_a+u)*n_v+a)*n_a+t];
+                // right factor at (v,w) = (t,u)
+                RA[r+t*n_a+u]=CAVA[((i*n_a+t)*n_v+a)*n_a+u];
+                RJ[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t];
+                RM[r+t*n_a+u]=VCAA[((a*n_c+i)*n_a+u)*n_a+t]-CAVA[((i*n_a+t)*n_v+a)*n_a+u];
+            }
+        }
+        const int K = 1024;   // pairs (i,a) per product
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> GA((size_t)K*N_fit), GM((size_t)K*N_fit), GJ((size_t)K*N_fit);
+#pragma omp for schedule(dynamic)
+            for(int tu=0; tu<n2; tu++){
+                const int t=tu/n_a, u=tu%n_a;
+                const size_t ro=(size_t)tu*n2*N_fit;
+                for(int k0=0; k0<nia; k0+=K){
+                    const int nk=(nia-k0<K)?nia-k0:K;
+                    for(int k=0; k<nk; k++){
+                        const int ia=k0+k, i=ia/n_v, a=ia%n_v;
+                        const double dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
+                        const double la=LA[(size_t)ia*n2+tu], lm=LM[(size_t)ia*n2+tu], lj=LJ[(size_t)ia*n2+tu];
+                        for(int i_f=0; i_f<N_fit; i_f++){
+                            const double dE=dE_orb+E_fit[i_f];
+                            const double d=dE/(dE*dE+edshift);
+                            GA[(size_t)k*N_fit+i_f]=la*d; GM[(size_t)k*N_fit+i_f]=lm*d; GJ[(size_t)k*N_fit+i_f]=lj*d;
+                        }
+                    }
+                    const double * rA=RA.data()+(size_t)k0*n2, * rM=RM.data()+(size_t)k0*n2, * rJ=RJ.data()+(size_t)k0*n2;
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rA,n2,GA.data(),N_fit,1.0,RF_AB+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rM,n2,GM.data(),N_fit,1.0,RF_MM+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rJ,n2,GM.data(),N_fit,1.0,RF_MJ+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rM,n2,GJ.data(),N_fit,1.0,RF_JM+ro,N_fit);
+                    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nk,1.0,rJ,n2,GJ.data(),N_fit,1.0,RF_JJ+ro,N_fit);
+                    // RF_MH, RF_JH[t,u,f] += sum_ia H_ia G_{M,J}[ia,f]
+                    cblas_dgemv(CblasRowMajor,CblasTrans,nk,N_fit,1.0,GM.data(),N_fit,H_CV+k0,1,1.0,RF_MH+(size_t)tu*N_fit,1);
+                    cblas_dgemv(CblasRowMajor,CblasTrans,nk,N_fit,1.0,GJ.data(),N_fit,H_CV+k0,1,1.0,RF_JH+(size_t)tu*N_fit,1);
+                }
+            }
+        }
+        set_blas_par();
+        // RF_HM, RF_HJ[t,u,f] += sum_ia L_{M,J}[ia,(t,u)] H_ia D0(i,a;f),  D0 with dE = e_i - e_a + E_fit[f]
+        std::vector<double> HD((size_t)nia*N_fit);
+        for(int ia=0; ia<nia; ia++){
+            const int i=ia/n_v, a=ia%n_v;
+            for(int i_f=0; i_f<N_fit; i_f++){
+                const double dE=e_c[i]-e_v[a]+E_fit[i_f];
+                HD[(size_t)ia*N_fit+i_f]=H_CV[ia]*dE/(dE*dE+edshift);
+            }
+        }
+        cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nia,1.0,LM.data(),n2,HD.data(),N_fit,1.0,RF_HM,N_fit);
+        cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,nia,1.0,LJ.data(),n2,HD.data(),N_fit,1.0,RF_HJ,N_fit);
+    }
+    
     double dE_orb;
-    
-    for(int i=0; i<n_c; i++)
-    for(int u=0; u<n_a; u++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<i(a)t(b)|u(a)a(b)><v(a)a(b)|i(a)w(b)>=(iu|at)(iv|aw)
-            V=CAVA[((i*n_a+u)*n_v+a)*n_a+t]*
-              CAVA[((i*n_a+v)*n_v+a)*n_a+w];
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //(<it|au>-<iu|at>)(<av|iw>-<av|wi>)
-            V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-               CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-              (VCAA[((a*n_c+i)*n_a+w)*n_a+v]-  //<av|iw>=(ai|wv)
-               CAVA[((i*n_a+v)*n_v+a)*n_a+w]); //<av|wi>=(iv|aw)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_MM[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-    
-
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //(<it|au>-<iu|at>)<av|iw>
-            V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-               CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-               VCAA[((a*n_c+i)*n_a+w)*n_a+v];  //<av|iw>=(ai|wv)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_MJ[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-    
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<it|au>(<av|iw>-<av|wi>)
-            V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-              (VCAA[((a*n_c+i)*n_a+w)*n_a+v]-  //<av|iw>=(ai|wv)
-               CAVA[((i*n_a+v)*n_v+a)*n_a+w]); //<av|wi>=(iv|aw)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_JM[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0; t<n_a; t++)
-    for(int u=0; u<n_a; u++){
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int v=0; v<n_a; v++)
-        for(int w=0; w<n_a; w++){
-            //<it|au><av|iw>
-            V=VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-              VCAA[((a*n_c+i)*n_a+w)*n_a+v];  //<av|iw>=(ai|wv)
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_JJ[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-        }
-    }
-//     printf_timer("opt table");
-    
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-           CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_MH[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V=(VCAA[((a*n_c+i)*n_a+u)*n_a+t]-  //<it|au>=(ai|tu)
-           CAVA[((i*n_a+u)*n_v+a)*n_a+t])* //<it|ua>=(iu|at)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]-e_v[a];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_HM[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]+e_a[t]-e_v[a]-e_a[u];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_JH[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    for(int i=0; i<n_c; i++)
-    for(int a=0; a<n_v; a++)
-    for(int t=0  ;t<n_a;t++)
-    for(int u=0  ;u<n_a;u++){
-        //(<it|au>-<iu|at>)*H[i,a]
-        V= VCAA[((a*n_c+i)*n_a+u)*n_a+t]*  //<it|au>=(ai|tu)
-           H_CV[i*n_v+a]; 
-        dE_orb=e_c[i]-e_v[a];
-        for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
-                RF_HJ[(t*n_a+u)*N_fit+i_f]+=V*dE/(dE*dE+edshift);
-        }
-    }
-    
-    
     for(int i=0; i<n_c; i++)
     for(int a=0; a<n_v; a++){
         //H[i,a]*H[i,a]
@@ -1208,6 +1248,8 @@ int res_fit_data::calc_RF_2_CV(){
 }
 
 int res_fit_data::calc_RF_2_AV(){
+    // the grid points win_f0 .. win_f0 + win_nf - 1: the window tables and intermediates have stride Nw, the full PV/PH/PS tables Nw
+    const int Nw = win_nf, f0 = win_f0;
     
     
     int n_i=n_c+n_a;
@@ -1239,27 +1281,65 @@ int res_fit_data::calc_RF_2_AV(){
     double * RF_P3_HJ;
     double * RF_P3_JH;
     
-    RF_P3_JJ = new double[n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_JM = new double[n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_MJ = new double[n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
+    RF_P3_JJ = new double[n_a*n_a*n_a*n_a*n_a*n_a*Nw];
+    RF_P3_JM = new double[n_a*n_a*n_a*n_a*n_a*n_a*Nw];
+    RF_P3_MJ = new double[n_a*n_a*n_a*n_a*n_a*n_a*Nw];
     
-    RF_P3_HM = new double[n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_MH = new double[n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_HJ = new double[n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_JH = new double[n_a*n_a*n_a*n_a*N_fit];
+    RF_P3_HM = new double[n_a*n_a*n_a*n_a*Nw];
+    RF_P3_MH = new double[n_a*n_a*n_a*n_a*Nw];
+    RF_P3_HJ = new double[n_a*n_a*n_a*n_a*Nw];
+    RF_P3_JH = new double[n_a*n_a*n_a*n_a*Nw];
     
-    set_zero_matr(RF_P3_JJ, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_JM, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_MJ, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_HM, n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_MH, n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_HJ, n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_JH, n_a*n_a*n_a*n_a*N_fit);
+    set_zero_matr(RF_P3_JJ, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_JM, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_MJ, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_HM, n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_MH, n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_HJ, n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_JH, n_a*n_a*n_a*n_a*Nw);
     
     
+    // The four six-index tables, for every (t,u,v) a matrix product over the virtual index a:
+    //   RF_X[t,u,v | y,x,w | f] += sum_a B_X[(y,x,w), a] G_X[a, f],   G_X[a,f] = A_X(a,t,u,v) ED(a,t,u,v; f)
+    // with the antisymmetrized (M) or plain (J) integrals on either side: JK = M.M, JJ = J.J, MJ = M.J, JM = J.M (first factor: t,u,v).
+    {
+        const size_t n3 = (size_t)n_a*n_a*n_a;
+        std::vector<double> BM(n3*n_v), BJ(n3*n_v);   // [(y,x,w), a]
+        for(int y=0; y<n_a; y++) for(int x=0; x<n_a; x++) for(int w=0; w<n_a; w++) for(int a=0; a<n_v; a++){
+            const size_t r = ((size_t)(y*n_a+x)*n_a+w)*n_v+a;
+            BJ[r] = VAAA[((a*n_a+x)*n_a+w)*n_a+y];
+            BM[r] = VAAA[((a*n_a+x)*n_a+w)*n_a+y]-VAAA[((a*n_a+y)*n_a+w)*n_a+x];
+        }
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> GM((size_t)n_v*Nw), GJ((size_t)n_v*Nw);
+#pragma omp for schedule(dynamic)
+            for(long tuv=0; tuv<(long)n3; tuv++){
+                const int t=tuv/(n_a*n_a), u=(tuv/n_a)%n_a, v=tuv%n_a;
+                for(int a=0; a<n_v; a++){
+                    const double dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
+                    const double Am=VAAA[((a*n_a+t)*n_a+v)*n_a+u]-VAAA[((a*n_a+u)*n_a+v)*n_a+t];
+                    const double Aj=VAAA[((a*n_a+u)*n_a+v)*n_a+t];
+                    for(int i_f=0; i_f<Nw; i_f++){
+                        const double dE=dE_orb+E_fit[f0+i_f];
+                        const double ed=dE/(dE*dE+edshift);
+                        GM[(size_t)a*Nw+i_f]=Am*ed;
+                        GJ[(size_t)a*Nw+i_f]=Aj*ed;
+                    }
+                }
+                const size_t off=(size_t)tuv*n3*Nw;
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,Nw,n_v,1.0,BM.data(),n_v,GM.data(),Nw,1.0,RF_P3_JK+off,Nw);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,Nw,n_v,1.0,BJ.data(),n_v,GJ.data(),Nw,1.0,RF_P3_JJ+off,Nw);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,Nw,n_v,1.0,BJ.data(),n_v,GM.data(),Nw,1.0,RF_P3_MJ+off,Nw);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,Nw,n_v,1.0,BM.data(),n_v,GJ.data(),Nw,1.0,RF_P3_JM+off,Nw);
+            }
+        }
+        set_blas_par();
+    }
+
 #pragma omp parallel
     {
-    //MM == JK
         double dE_orb;
         double V;
         double dE;
@@ -1267,113 +1347,25 @@ int res_fit_data::calc_RF_2_AV(){
         double H2a;
         
         double * ED;
-        ED = new double[N_fit];
+        ED = new double[Nw];
         
         int u,v;
         int th_id = omp_get_thread_num();
         
-        for(int vu=th_id; vu<n_a*n_a; vu+=num_threads){
-            v=vu/n_a;
-            u=vu%n_a;
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<aw|xy>-<aw|yx>=(yw|xa)-(xw|ya)
-                    V =(VAAA[((a*n_a+t)*n_a+v)*n_a+u]-
-                        VAAA[((a*n_a+u)*n_a+v)*n_a+t])*
-                       (VAAA[((a*n_a+x)*n_a+w)*n_a+y]-
-                        VAAA[((a*n_a+y)*n_a+w)*n_a+x]);
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JK[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-        
-            //JJ
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<a(a)w(b)|x(a)y(b)>=(yw|xa)
-                    V=VAAA[((a*n_a+u)*n_a+v)*n_a+t]*
-                      VAAA[((a*n_a+x)*n_a+w)*n_a+y];
-                    
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-            //MJ
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<a(a)w(b)|x(a)y(b)>=(yw|xa)
-                    V=(VAAA[((a*n_a+t)*n_a+v)*n_a+u]-
-                       VAAA[((a*n_a+u)*n_a+v)*n_a+t])*
-                       VAAA[((a*n_a+x)*n_a+w)*n_a+y];
-            
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_MJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-            //JM
-            for(int a=0; a<n_v; a++)
-            for(int t=0; t<n_a; t++){
-                dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
-                    ED[i_f]=dE/(dE*dE+edshift);
-                }
-                for(int y=0; y<n_a; y++)
-                for(int x=0; x<n_a; x++)
-                for(int w=0; w<n_a; w++){
-                    //<aw|xy>-<aw|yx>=(yw|xa)-(xw|ya)
-            V= VAAA[((a*n_a+u)*n_a+v)*n_a+t]*
-              (VAAA[((a*n_a+x)*n_a+w)*n_a+y]-
-               VAAA[((a*n_a+y)*n_a+w)*n_a+x]);
-            
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JM[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-                    
-                }
-            }
-        }
-    
         //H
         for(int a=0; a<n_v; a++)
         for(int t=th_id; t<n_a; t+=num_threads){
             dE_orb=-e_v[a]+e_a[t];
-            for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
+            for(int i_f=0; i_f<Nw; i_f++){
+                dE=dE_orb+E_fit[f0+i_f];
                 ED[i_f]=dE/(dE*dE+edshift);
             }
             for(int w=0; w<n_a; w++){
                 H1a=H_AV[t*n_v+a];
                 H2a=H_AV[w*n_v+a];                          
                 V=H1a*H2a;
-                for(int i_f=0; i_f<N_fit; i_f++)
-                    RF_PH[(t*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+                for(int i_f=0; i_f<Nw; i_f++)
+                    RF_PH[(t*n_a+w)*N_fit+f0+i_f]+=V*ED[i_f];
                 
             }
         }
@@ -1381,8 +1373,8 @@ int res_fit_data::calc_RF_2_AV(){
         for(int a=0; a<n_v; a++)
         for(int t=th_id; t<n_a; t+=num_threads){
             dE_orb=-e_v[a]+e_a[t];
-            for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
+            for(int i_f=0; i_f<Nw; i_f++){
+                dE=dE_orb+E_fit[f0+i_f];
                 ED[i_f]=dE/(dE*dE+edshift);
             }
             for(int y=0; y<n_a; y++)
@@ -1400,8 +1392,8 @@ int res_fit_data::calc_RF_2_AV(){
                   (VAAA[((a*n_a+x)*n_a+w)*n_a+y]-
                    VAAA[((a*n_a+y)*n_a+w)*n_a+x]);
                 
-                for(int i_f=0; i_f<N_fit; i_f++)
-                    RF_P3_HM[(((t*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+                for(int i_f=0; i_f<Nw; i_f++)
+                    RF_P3_HM[(((t*n_a+y)*n_a+x)*n_a+w)*Nw+i_f]+=V*ED[i_f];
                 
             }
         }
@@ -1412,8 +1404,8 @@ int res_fit_data::calc_RF_2_AV(){
             for(int a=0; a<n_v; a++)
             for(int t=0; t<n_a; t++){
                 dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
+                for(int i_f=0; i_f<Nw; i_f++){
+                    dE=dE_orb+E_fit[f0+i_f];
                     ED[i_f]=dE/(dE*dE+edshift);
                 }
                 for(int w=0; w<n_a; w++){
@@ -1429,8 +1421,8 @@ int res_fit_data::calc_RF_2_AV(){
                        VAAA[((a*n_a+u)*n_a+v)*n_a+t])*
                        H2a;
                     
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_MH[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+                    for(int i_f=0; i_f<Nw; i_f++)
+                        RF_P3_MH[(((t*n_a+u)*n_a+v)*n_a+w)*Nw+i_f]+=V*ED[i_f];
                     
                 }
             }
@@ -1439,8 +1431,8 @@ int res_fit_data::calc_RF_2_AV(){
         for(int a=0; a<n_v; a++)
         for(int t=th_id; t<n_a; t+=num_threads){
             dE_orb=-e_v[a]+e_a[t];
-            for(int i_f=0; i_f<N_fit; i_f++){
-                dE=dE_orb+E_fit[i_f];
+            for(int i_f=0; i_f<Nw; i_f++){
+                dE=dE_orb+E_fit[f0+i_f];
                 ED[i_f]=dE/(dE*dE+edshift);
             }
             for(int y=0; y<n_a; y++)
@@ -1455,8 +1447,8 @@ int res_fit_data::calc_RF_2_AV(){
                 V=H1a*
                   VAAA[((a*n_a+x)*n_a+w)*n_a+y];
                 
-                for(int i_f=0; i_f<N_fit; i_f++)
-                    RF_P3_HJ[(((t*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+                for(int i_f=0; i_f<Nw; i_f++)
+                    RF_P3_HJ[(((t*n_a+y)*n_a+x)*n_a+w)*Nw+i_f]+=V*ED[i_f];
                 
             }
         }
@@ -1467,8 +1459,8 @@ int res_fit_data::calc_RF_2_AV(){
             for(int a=0; a<n_v; a++)
             for(int t=0; t<n_a; t++){
                 dE_orb=-e_v[a]+e_a[t]+e_a[u]-e_a[v];
-                for(int i_f=0; i_f<N_fit; i_f++){
-                    dE=dE_orb+E_fit[i_f];
+                for(int i_f=0; i_f<Nw; i_f++){
+                    dE=dE_orb+E_fit[f0+i_f];
                     ED[i_f]=dE/(dE*dE+edshift);
                 }
                 for(int w=0; w<n_a; w++){
@@ -1480,8 +1472,8 @@ int res_fit_data::calc_RF_2_AV(){
 // #endif          
                     V=VAAA[((a*n_a+u)*n_a+v)*n_a+t]*
                       H2a;
-                    for(int i_f=0; i_f<N_fit; i_f++)
-                        RF_P3_JH[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+                    for(int i_f=0; i_f<Nw; i_f++)
+                        RF_P3_JH[(((t*n_a+u)*n_a+v)*n_a+w)*Nw+i_f]+=V*ED[i_f];
                     
                 }
             }
@@ -1490,46 +1482,49 @@ int res_fit_data::calc_RF_2_AV(){
         
     }
     //RF_PV_JK
+#pragma omp parallel for collapse(2)
     for(int w=0; w<n_a; w++)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PV_JK[(((w*n_a+t)*n_a+v)*n_a+u)*N_fit+i_f]+= RF_P3_HM[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]
-                                                       -RF_P3_HM[(((w*n_a+u)*n_a+v)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_MH[(((t*n_a+w)*n_a+v)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_MH[(((t*n_a+w)*n_a+u)*n_a+v)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PV_JK[(((w*n_a+t)*n_a+v)*n_a+u)*N_fit+f0+i_f]+= RF_P3_HM[(((t*n_a+u)*n_a+v)*n_a+w)*Nw+i_f]
+                                                       -RF_P3_HM[(((w*n_a+u)*n_a+v)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_MH[(((t*n_a+w)*n_a+v)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_MH[(((t*n_a+w)*n_a+u)*n_a+v)*Nw+i_f];
     //RF_PV_AB
+#pragma omp parallel for collapse(2)
     for(int w=0; w<n_a; w++)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
-    for(int i_f=0; i_f<N_fit; i_f++){
-        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+= RF_P3_HJ[(((t*n_a+w)*n_a+v)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_JH[(((u*n_a+t)*n_a+w)*n_a+v)*N_fit+i_f]
-                                                       +RF_P3_HJ[(((u*n_a+v)*n_a+w)*n_a+t)*N_fit+i_f]
-                                                       +RF_P3_JH[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++){
+        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+f0+i_f]+= RF_P3_HJ[(((t*n_a+w)*n_a+v)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_JH[(((u*n_a+t)*n_a+w)*n_a+v)*Nw+i_f]
+                                                       +RF_P3_HJ[(((u*n_a+v)*n_a+w)*n_a+t)*Nw+i_f]
+                                                       +RF_P3_JH[(((t*n_a+u)*n_a+v)*n_a+w)*Nw+i_f];
     
         for(int x=0; x<n_a; x++)
-            RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f] += RF_P3_JJ[(((((t*n_a+u)*n_a+x)*n_a+v)*n_a+w)*n_a+x)*N_fit+i_f]
-                                                            +RF_P3_JJ[(((((u*n_a+t)*n_a+x)*n_a+w)*n_a+v)*n_a+x)*N_fit+i_f];
+            RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+f0+i_f] += RF_P3_JJ[(((((t*n_a+u)*n_a+x)*n_a+v)*n_a+w)*n_a+x)*Nw+i_f]
+                                                            +RF_P3_JJ[(((((u*n_a+t)*n_a+x)*n_a+w)*n_a+v)*n_a+x)*Nw+i_f];
     }
     //RF_P3_AB
+#pragma omp parallel for collapse(2)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
     for(int t=0; t<n_a; t++)
     for(int y=0; y<n_a; y++)
     for(int x=0; x<n_a; x++)
     for(int w=0; w<n_a; w++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_P3_AB[(((((t*n_a+u)*n_a+v)*n_a+w)*n_a+x)*n_a+y)*N_fit+i_f]+=-RF_P3_MJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+w)*n_a+x)*N_fit+i_f]
-                                                                       +RF_P3_MJ[(((((t*n_a+u)*n_a+w)*n_a+y)*n_a+v)*n_a+x)*N_fit+i_f]
-                                                                       +RF_P3_JM[(((((x*n_a+t)*n_a+y)*n_a+w)*n_a+v)*n_a+u)*N_fit+i_f]
-                                                                       -RF_P3_JM[(((((x*n_a+u)*n_a+y)*n_a+w)*n_a+v)*n_a+t)*N_fit+i_f]
-                                                                       +RF_P3_JJ[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+y)*n_a+u)*N_fit+i_f]
-                                                                       -RF_P3_JJ[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+y)*n_a+u)*N_fit+i_f]
-                                                                       -RF_P3_JJ[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+y)*n_a+t)*N_fit+i_f]
-                                                                       +RF_P3_JJ[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+y)*n_a+t)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_P3_AB[(((((t*n_a+u)*n_a+v)*n_a+w)*n_a+x)*n_a+y)*Nw+i_f]+=-RF_P3_MJ[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+w)*n_a+x)*Nw+i_f]
+                                                                       +RF_P3_MJ[(((((t*n_a+u)*n_a+w)*n_a+y)*n_a+v)*n_a+x)*Nw+i_f]
+                                                                       +RF_P3_JM[(((((x*n_a+t)*n_a+y)*n_a+w)*n_a+v)*n_a+u)*Nw+i_f]
+                                                                       -RF_P3_JM[(((((x*n_a+u)*n_a+y)*n_a+w)*n_a+v)*n_a+t)*Nw+i_f]
+                                                                       +RF_P3_JJ[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+y)*n_a+u)*Nw+i_f]
+                                                                       -RF_P3_JJ[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+y)*n_a+u)*Nw+i_f]
+                                                                       -RF_P3_JJ[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+y)*n_a+t)*Nw+i_f]
+                                                                       +RF_P3_JJ[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+y)*n_a+t)*Nw+i_f];
                                                 
     
     delete[] VAAA;
@@ -1546,6 +1541,8 @@ int res_fit_data::calc_RF_2_AV(){
 }
 
 int res_fit_data::calc_RF_2_CA(){
+    // the grid points win_f0 .. win_f0 + win_nf - 1: the window tables and intermediates have stride Nw, the full PV/PH/PS tables Nw
+    const int Nw = win_nf, f0 = win_f0;
     
     double dE;
     double dE_orb;
@@ -1556,7 +1553,7 @@ int res_fit_data::calc_RF_2_CA(){
     double V;
     
     double * ED;
-    ED = new double[N_fit];
+    ED = new double[Nw];
     int i_CI=0;
     
     
@@ -1593,74 +1590,55 @@ int res_fit_data::calc_RF_2_CA(){
     double * RF_P3_HV;
     double * RF_P3_HH;
     
-    RF_P3_VV = new double[n_a*n_a*n_a*n_a*n_a*n_a*N_fit];
-    RF_P3_VH = new double[n_a*n_a*n_a*n_a*        N_fit];
-    RF_P3_HV = new double[n_a*n_a*n_a*n_a*        N_fit];
-    RF_P3_HH = new double[n_a*n_a*                N_fit];
+    RF_P3_VV = new double[n_a*n_a*n_a*n_a*n_a*n_a*Nw];
+    RF_P3_VH = new double[n_a*n_a*n_a*n_a*        Nw];
+    RF_P3_HV = new double[n_a*n_a*n_a*n_a*        Nw];
+    RF_P3_HH = new double[n_a*n_a*                Nw];
     
-    set_zero_matr(RF_P3_VV, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
-    set_zero_matr(RF_P3_VH, n_a*n_a*n_a*n_a*        N_fit);
-    set_zero_matr(RF_P3_HV, n_a*n_a*n_a*n_a*        N_fit);
-    set_zero_matr(RF_P3_HH, n_a*n_a*                N_fit);
+    set_zero_matr(RF_P3_VV, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
+    set_zero_matr(RF_P3_VH, n_a*n_a*n_a*n_a*        Nw);
+    set_zero_matr(RF_P3_HV, n_a*n_a*n_a*n_a*        Nw);
+    set_zero_matr(RF_P3_HH, n_a*n_a*                Nw);
     
     
     
-    //VV
-    for(int v=0; v<n_a; v++)
-    for(int u=0; u<n_a; u++)
-    for(int i=0; i<n_c; i++)
-    for(int t=0; t<n_a; t++){
-        dE_orb= e_c[i]+e_a[t]-e_a[u]-e_a[v];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
+    // VV and VH, for every (t,u,v) a product over the core index i (denominator D(i,t,u,v; f), dE = e_i + e_t - e_u - e_v + E_fit[f]):
+    //   RF_P3_VV[t,u,v,(y,x,w),f] += sum_i (iw|xy) (iv|ut) D,   RF_P3_VH[t,u,v,w,f] += sum_i H_CA[i,w] (iv|ut) D
+    {
+        const size_t n3 = (size_t)n_a*n_a*n_a;
+        std::vector<double> B(n3*n_c);   // [(y,x,w), i] = (iw|xy)
+        for(int y=0; y<n_a; y++) for(int x=0; x<n_a; x++) for(int w=0; w<n_a; w++) for(int i=0; i<n_c; i++)
+            B[((size_t)(y*n_a+x)*n_a+w)*n_c+i]=CAAA[((i*n_a+w)*n_a+x)*n_a+y];
+        std::vector<double> HT((size_t)n_a*n_c);   // [w, i] = H_CA[i,w]
+        for(int i=0; i<n_c; i++) for(int w=0; w<n_a; w++) HT[(size_t)w*n_c+i]=H_CA[i*n_a+w];
+        set_blas_non_par();
+#pragma omp parallel
+        {
+            std::vector<double> G((size_t)n_c*Nw);
+#pragma omp for schedule(dynamic)
+            for(long tuv=0; tuv<(long)n3; tuv++){
+                const int t=tuv/(n_a*n_a), u=(tuv/n_a)%n_a, v=tuv%n_a;
+                for(int i=0; i<n_c; i++){
+                    const double dE_o=e_c[i]+e_a[t]-e_a[u]-e_a[v];
+                    const double c=CAAA[((i*n_a+v)*n_a+u)*n_a+t];
+                    for(int i_f=0; i_f<Nw; i_f++){
+                        const double dE=dE_o+E_fit[f0+i_f];
+                        G[(size_t)i*Nw+i_f]=c*dE/(dE*dE+edshift);
+                    }
+                }
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n3,Nw,n_c,1.0,B.data(),n_c,G.data(),Nw,1.0,RF_P3_VV+(size_t)tuv*n3*Nw,Nw);
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,n_a,Nw,n_c,1.0,HT.data(),n_c,G.data(),Nw,1.0,RF_P3_VH+(size_t)tuv*n_a*Nw,Nw);
+            }
         }
-        for(int y=0; y<n_a; y++)
-        for(int x=0; x<n_a; x++)
-        for(int w=0; w<n_a; w++){
-            
-// #ifndef _RI 
-//             V=AAAC[((t*n_a+u)*n_a+v)*n_c+i]*
-//               AAAC[((y*n_a+x)*n_a+w)*n_c+i];
-// #endif      
-            V=(CAAA[((i*n_a+v)*n_a+u)*n_a+t]*
-               CAAA[((i*n_a+w)*n_a+x)*n_a+y]);
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_VV[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
-    }
-    //VH
-    for(int v=0; v<n_a; v++)
-    for(int u=0; u<n_a; u++)
-    for(int i=0; i<n_c; i++)
-    for(int t=0; t<n_a; t++){
-        dE_orb= e_c[i]+e_a[t]-e_a[u]-e_a[v];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
-            ED[i_f]=dE/(dE*dE+edshift);
-        }
-        for(int w=0; w<n_a; w++){
-            H2a=H_CA[i*n_a+w];
-// #ifndef _RI 
-//             V=AAAC[((t*n_a+u)*n_a+v)*n_c+i]*
-//               H2a;
-// #endif      
-            V=(CAAA[((i*n_a+v)*n_a+u)*n_a+t]*
-               H2a);
-
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_VH[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
-            
-        }
+        set_blas_par();
     }
 
     //HV
     for(int i=0; i<n_c; i++)
     for(int t=0; t<n_a; t++){
         dE_orb= e_c[i]-e_a[t];
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
+        for(int i_f=0; i_f<Nw; i_f++){
+            dE=dE_orb+E_fit[f0+i_f];
             ED[i_f]=dE/(dE*dE+edshift);
         }
         for(int y=0; y<n_a; y++)
@@ -1673,8 +1651,8 @@ int res_fit_data::calc_RF_2_CA(){
 // #endif      
             V=(H1a*
                CAAA[((i*n_a+w)*n_a+x)*n_a+y]);
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_HV[(((t*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+=V*ED[i_f];
+            for(int i_f=0; i_f<Nw; i_f++)
+                RF_P3_HV[(((t*n_a+y)*n_a+x)*n_a+w)*Nw+i_f]+=V*ED[i_f];
             
         }
     }
@@ -1684,8 +1662,8 @@ int res_fit_data::calc_RF_2_CA(){
     for(int t=0; t<n_a; t++){
         dE_orb= e_c[i]-e_a[t];
 
-        for(int i_f=0; i_f<N_fit; i_f++){
-            dE=dE_orb+E_fit[i_f];
+        for(int i_f=0; i_f<Nw; i_f++){
+            dE=dE_orb+E_fit[f0+i_f];
             ED[i_f]=dE/(dE*dE+edshift);
         }
         for(int u=0; u<n_a; u++){
@@ -1693,8 +1671,8 @@ int res_fit_data::calc_RF_2_CA(){
             H2a=H_CA[i*n_a+u];
             V=H1a*H2a;
                             
-            for(int i_f=0; i_f<N_fit; i_f++)
-                RF_P3_HH[(t*n_a+u)*N_fit+i_f]+=V*ED[i_f];
+            for(int i_f=0; i_f<Nw; i_f++)
+                RF_P3_HH[(t*n_a+u)*Nw+i_f]+=V*ED[i_f];
             
         }
     }
@@ -1702,131 +1680,140 @@ int res_fit_data::calc_RF_2_CA(){
     
     
     
-//     set_zero_matr(RF_P3_JK, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
+//     set_zero_matr(RF_P3_JK, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
     
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
     for(int w=0; w<n_a; w++)
     for(int x=0; x<n_a; x++)
     for(int y=0; y<n_a; y++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_P3_JK[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*N_fit+i_f]+= RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+y)*n_a+w)*n_a+u)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+y)*n_a+w)*n_a+t)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+x)*n_a+w)*n_a+u)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+y)*n_a+x)*n_a+w)*n_a+t)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_P3_JK[(((((t*n_a+u)*n_a+v)*n_a+y)*n_a+x)*n_a+w)*Nw+i_f]+= RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+y)*n_a+w)*n_a+u)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+y)*n_a+w)*n_a+t)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+x)*n_a+w)*n_a+u)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+y)*n_a+x)*n_a+w)*n_a+t)*Nw+i_f];
     
-//     set_zero_matr(RF_PV_JK, n_a*n_a*n_a*n_a*N_fit);
+//     set_zero_matr(RF_PV_JK, n_a*n_a*n_a*n_a*Nw);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
     for(int w=0; w<n_a; w++)
     for(int x=0; x<n_a; x++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PV_JK[(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+i_f]+=-RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PV_JK[(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+f0+i_f]+=-RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+t)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+u)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_VV[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+v)*n_a+x)*n_a+w)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((t*n_a+w)*n_a+x)*n_a+v)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f];
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int v=0; v<n_a; v++)
     for(int u=0; u<n_a; u++)
     for(int w=0; w<n_a; w++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PV_JK[(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+i_f]+=-RF_P3_VH[(((t*n_a+v)*n_a+w)*n_a+u)*N_fit+i_f]
-                                                       -RF_P3_HV[(((v*n_a+w)*n_a+u)*n_a+t)*N_fit+i_f]
-                                                       +RF_P3_VH[(((u*n_a+v)*n_a+w)*n_a+t)*N_fit+i_f]
-                                                       +RF_P3_HV[(((v*n_a+w)*n_a+t)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_VH[(((t*n_a+w)*n_a+v)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_HV[(((w*n_a+v)*n_a+u)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_VH[(((u*n_a+w)*n_a+v)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_HV[(((w*n_a+v)*n_a+t)*n_a+u)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PV_JK[(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+f0+i_f]+=-RF_P3_VH[(((t*n_a+v)*n_a+w)*n_a+u)*Nw+i_f]
+                                                       -RF_P3_HV[(((v*n_a+w)*n_a+u)*n_a+t)*Nw+i_f]
+                                                       +RF_P3_VH[(((u*n_a+v)*n_a+w)*n_a+t)*Nw+i_f]
+                                                       +RF_P3_HV[(((v*n_a+w)*n_a+t)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_VH[(((t*n_a+w)*n_a+v)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_HV[(((w*n_a+v)*n_a+u)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_VH[(((u*n_a+w)*n_a+v)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_HV[(((w*n_a+v)*n_a+t)*n_a+u)*Nw+i_f];
 
     
-//     set_zero_matr(RF_P3_AB, n_a*n_a*n_a*n_a*n_a*n_a*N_fit);
+//     set_zero_matr(RF_P3_AB, n_a*n_a*n_a*n_a*n_a*n_a*Nw);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
     for(int w=0; w<n_a; w++)
     for(int x=0; x<n_a; x++)
     for(int y=0; y<n_a; y++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_P3_AB[(((((t*n_a+u)*n_a+v)*n_a+w)*n_a+x)*n_a+y)*N_fit+i_f]+=-RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+y)*n_a+w)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+y)*n_a+v)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+y)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+w)*n_a+y)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+w)*n_a+y)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+v)*n_a+y)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+v)*n_a+y)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((x*n_a+y)*n_a+v)*n_a+w)*n_a+u)*n_a+t)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((x*n_a+y)*n_a+v)*n_a+w)*n_a+t)*n_a+u)*N_fit+i_f]
-                                                                       +RF_P3_VV[(((((x*n_a+y)*n_a+w)*n_a+v)*n_a+u)*n_a+t)*N_fit+i_f]
-                                                                       -RF_P3_VV[(((((x*n_a+y)*n_a+w)*n_a+v)*n_a+t)*n_a+u)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_P3_AB[(((((t*n_a+u)*n_a+v)*n_a+w)*n_a+x)*n_a+y)*Nw+i_f]+=-RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+y)*n_a+w)*n_a+t)*n_a+x)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+y)*n_a+v)*n_a+u)*n_a+x)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+y)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+w)*n_a+y)*n_a+x)*n_a+u)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((u*n_a+v)*n_a+w)*n_a+y)*n_a+x)*n_a+t)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((t*n_a+w)*n_a+v)*n_a+y)*n_a+x)*n_a+u)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+v)*n_a+y)*n_a+x)*n_a+t)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((x*n_a+y)*n_a+v)*n_a+w)*n_a+u)*n_a+t)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((x*n_a+y)*n_a+v)*n_a+w)*n_a+t)*n_a+u)*Nw+i_f]
+                                                                       +RF_P3_VV[(((((x*n_a+y)*n_a+w)*n_a+v)*n_a+u)*n_a+t)*Nw+i_f]
+                                                                       -RF_P3_VV[(((((x*n_a+y)*n_a+w)*n_a+v)*n_a+t)*n_a+u)*Nw+i_f];
 
-//     set_zero_matr(RF_PV_AB, n_a*n_a*n_a*n_a*N_fit);
+//     set_zero_matr(RF_PV_AB, n_a*n_a*n_a*n_a*Nw);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
     for(int w=0; w<n_a; w++)
     for(int x=0; x<n_a; x++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=-RF_P3_VV[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+x)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*N_fit+i_f]
-                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+u)*N_fit+i_f]
-                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+f0+i_f]+=-RF_P3_VV[(((((t*n_a+x)*n_a+w)*n_a+v)*n_a+x)*n_a+u)*Nw+i_f]
+                                                       -RF_P3_VV[(((((t*n_a+x)*n_a+v)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+x)*n_a+t)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+v)*n_a+w)*n_a+x)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_VV[(((((u*n_a+x)*n_a+w)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       +RF_P3_VV[(((((u*n_a+w)*n_a+x)*n_a+v)*n_a+t)*n_a+x)*Nw+i_f]
+                                                       -RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+x)*n_a+u)*Nw+i_f]
+                                                       +RF_P3_VV[(((((t*n_a+v)*n_a+x)*n_a+w)*n_a+u)*n_a+x)*Nw+i_f];
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
     for(int w=0; w<n_a; w++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=-RF_P3_VH[(((u*n_a+w)*n_a+v)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_HV[(((v*n_a+w)*n_a+u)*n_a+t)*N_fit+i_f]
-                                                       -RF_P3_VH[(((t*n_a+v)*n_a+w)*n_a+u)*N_fit+i_f]
-                                                       -RF_P3_HV[(((w*n_a+v)*n_a+t)*n_a+u)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PV_AB[(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+f0+i_f]+=-RF_P3_VH[(((u*n_a+w)*n_a+v)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_HV[(((v*n_a+w)*n_a+u)*n_a+t)*Nw+i_f]
+                                                       -RF_P3_VH[(((t*n_a+v)*n_a+w)*n_a+u)*Nw+i_f]
+                                                       -RF_P3_HV[(((w*n_a+v)*n_a+t)*n_a+u)*Nw+i_f];
     
-//     set_zero_matr(RF_PH, n_a*n_a*N_fit);
+//     set_zero_matr(RF_PH, n_a*n_a*Nw);
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int v=0; v<n_a; v++)
     for(int y=0; y<n_a; y++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PH[(t*n_a+u)*N_fit+i_f]+=-RF_P3_VV[(((((t*n_a+y)*n_a+v)*n_a+u)*n_a+v)*n_a+y)*N_fit+i_f]
-                                    +RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+u)*n_a+v)*n_a+y)*N_fit+i_f]*2;
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PH[(t*n_a+u)*N_fit+f0+i_f]+=-RF_P3_VV[(((((t*n_a+y)*n_a+v)*n_a+u)*n_a+v)*n_a+y)*Nw+i_f]
+                                    +RF_P3_VV[(((((t*n_a+v)*n_a+y)*n_a+u)*n_a+v)*n_a+y)*Nw+i_f]*2;
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
     for(int y=0; y<n_a; y++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PH[(t*n_a+u)*N_fit+i_f]+=-RF_P3_VH[(((t*n_a+y)*n_a+u)*n_a+y)*N_fit+i_f]
-                                    +RF_P3_VH[(((t*n_a+u)*n_a+y)*n_a+y)*N_fit+i_f]*2
-                                    -RF_P3_HV[(((y*n_a+u)*n_a+y)*n_a+t)*N_fit+i_f]
-                                    +RF_P3_HV[(((y*n_a+u)*n_a+t)*n_a+y)*N_fit+i_f]*2;
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PH[(t*n_a+u)*N_fit+f0+i_f]+=-RF_P3_VH[(((t*n_a+y)*n_a+u)*n_a+y)*Nw+i_f]
+                                    +RF_P3_VH[(((t*n_a+u)*n_a+y)*n_a+y)*Nw+i_f]*2
+                                    -RF_P3_HV[(((y*n_a+u)*n_a+y)*n_a+t)*Nw+i_f]
+                                    +RF_P3_HV[(((y*n_a+u)*n_a+t)*n_a+y)*Nw+i_f]*2;
+#pragma omp parallel for collapse(2)
     for(int t=0; t<n_a; t++)
     for(int u=0; u<n_a; u++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PH[(t*n_a+u)*N_fit+i_f]+=-RF_P3_HH[(u*n_a+t)*N_fit+i_f];
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PH[(t*n_a+u)*N_fit+f0+i_f]+=-RF_P3_HH[(u*n_a+t)*Nw+i_f];
     
-//     set_zero_matr(RF_PS, N_fit);
+//     set_zero_matr(RF_PS, Nw);
     for(int t=0; t<n_a; t++)
-    for(int i_f=0; i_f<N_fit; i_f++)
-        RF_PS[i_f]+=RF_P3_HH[(t*n_a+t)*N_fit+i_f]*2;
+    for(int i_f=0; i_f<Nw; i_f++)
+        RF_PS[f0+i_f]+=RF_P3_HH[(t*n_a+t)*Nw+i_f]*2;
     
 
     delete[] ED;
@@ -2007,101 +1994,62 @@ int res_fit_data::calc_RF_2_CAVV(){
 }
 
 int res_fit_data::calc_RF_2_AAVV(){
-    
-//     num_threads=1;
-    double **JK_th= new double * [num_threads];
-    for(int i=0;i<num_threads;i++)JK_th[i]=new double[n_a*n_a*n_a*n_a*N_fit];
-    for(int i=0;i<num_threads;i++)set_zero_matr(JK_th[i],n_a*n_a*n_a*n_a*N_fit);
-
-    double **AB_th= new double * [num_threads];
-    for(int i=0;i<num_threads;i++)AB_th[i]=new double[n_a*n_a*n_a*n_a*N_fit];
-    for(int i=0;i<num_threads;i++)set_zero_matr(AB_th[i],n_a*n_a*n_a*n_a*N_fit);
-
-#ifdef _OPENBLAS
-    openblas_set_num_threads(1);
-#endif
-    omp_set_num_threads(num_threads);
-
-
-//     printf("%d %d %d\n", num_threads,omp_get_num_threads(), openblas_get_num_threads());
-//     getchar();
-    
-    
-    int n_i=n_c+n_a;
-    #pragma omp parallel
-    {
-        int nt =omp_get_thread_num();
-        
-        double AB,JK,dE;
-        
-        double * Ja;
-        
-        Ja = new double[n_a*n_a];
-        
-        for(int a=nt; a<n_v; a+=num_threads)
-        for(int b=a; b<n_v; b++){//fprintf(stderr,"AAVV a,b=%3d,%3d  (thread %2d)    \r",a,b,nt);
-// #ifdef _RI
-            cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasTrans,
-                            n_a,n_a,RI->aux_n_ao,1.0,
-                            RI->VA_RI_M+a*n_a*RI->aux_n_ao,RI->aux_n_ao,
-                            RI->VA_RI_M+b*n_a*RI->aux_n_ao,RI->aux_n_ao,0.0,
-                            Ja,n_a);
-// #endif        
-            for(int t=0  ;t<n_a;t++)
-            for(int u=0  ;u<n_a;u++)
-            for(int v=0  ;v<n_a;v++)
-            for(int w=0  ;w<n_a;w++){
-// #ifndef _RI
-//                 JK=(IEIE[(((t+n_c)*n_v+a)*n_i+u+n_c)*n_v+b]-
-//                     IEIE[(((t+n_c)*n_v+b)*n_i+u+n_c)*n_v+a])*
-//                    (IEIE[(((v+n_c)*n_v+a)*n_i+w+n_c)*n_v+b]-
-//                     IEIE[(((v+n_c)*n_v+b)*n_i+w+n_c)*n_v+a]);
-// #endif      
-// #ifdef _RI  
-                JK=(Ja[t*n_a+u]-Ja[u*n_a+t])*
-                   (Ja[v*n_a+w]-Ja[w*n_a+v]);
-// #endif
-// #ifndef _RI
-//                 AB         =IEIE[(((t+n_c)*n_v+a)*n_i+u+n_c)*n_v+b]*
-//                             IEIE[(((v+n_c)*n_v+a)*n_i+w+n_c)*n_v+b];
-//                 if(a!=b)AB+=IEIE[(((t+n_c)*n_v+b)*n_i+u+n_c)*n_v+a]*
-//                             IEIE[(((v+n_c)*n_v+b)*n_i+w+n_c)*n_v+a];
-// #endif      
-// #ifdef _RI  
-                AB         =Ja[t*n_a+u]*Ja[v*n_a+w];
-                if(a!=b)AB+=Ja[u*n_a+t]*Ja[w*n_a+v];
-// #endif            
-                   
-                for(int i_f=0;i_f<N_fit;i_f++){
-                    dE=e_a[t]+e_a[u]-e_v[a]-e_v[b]+E_fit[i_f];
-                    JK_th[nt][(((u*n_a+t)*n_a+v)*n_a+w)*N_fit+i_f]+=JK*dE/(dE*dE+edshift);///inverse t-u in res_fit_calc_2body_AA (?)
-                    AB_th[nt][(((t*n_a+u)*n_a+v)*n_a+w)*N_fit+i_f]+=AB*dE/(dE*dE+edshift);
+    // For the virtual pairs a <= b, J_ab[t,u] = (ta|ub) and the denominator D_ab(t,u; f) = dE/(dE^2 + s), dE = e_t + e_u - e_a - e_b + E_fit[f]:
+    //   RF_PV_AB[t,u,v,w,f] += sum_ab D_ab(t,u;f) [ J_ab[t,u] J_ab[v,w] + (a != b) J_ab[u,t] J_ab[w,v] ]
+    //   RF_PV_JK[u,t,v,w,f] += sum_ab D_ab(t,u;f) K_ab[t,u] K_ab[v,w],   K_ab[t,u] = J_ab[t,u] - J_ab[u,t]
+    // For a block of pairs: their J (one small product each, in parallel over the pairs), then for every output row (t,u) a matrix product over
+    // the pairs: row[(v,w), f] += sum_q Y_q[(v,w)] Y_q[(t,u)] D_q(t,u;f). Every thread writes its own rows: no per-thread copies of the tables.
+    const int n2 = n_a*n_a;
+    const int naux = RI->aux_n_ao;
+    std::vector<int> pa, pb;
+    for(int a=0; a<n_v; a++) for(int b=a; b<n_v; b++){ pa.push_back(a); pb.push_back(b); }
+    const int n_pair = (int)pa.size();
+    const int P = 512;   // pairs per block
+    std::vector<double> YAB((size_t)2*P*n2), YK((size_t)P*n2);
+    set_blas_non_par();
+    for(int p0=0; p0<n_pair; p0+=P){
+        const int np = (n_pair-p0 < P) ? n_pair-p0 : P;
+#pragma omp parallel
+        {
+            std::vector<double> Ja(n2);
+#pragma omp for schedule(dynamic)
+            for(int q=0; q<np; q++){
+                const int a=pa[p0+q], b=pb[p0+q];
+                cblas_dgemm(CblasRowMajor,CblasNoTrans,CblasTrans,n_a,n_a,naux,1.0,
+                            RI->VA_RI_M+(size_t)a*n_a*naux,naux,RI->VA_RI_M+(size_t)b*n_a*naux,naux,0.0,Ja.data(),n_a);
+                for(int t=0; t<n_a; t++) for(int u=0; u<n_a; u++){
+                    YAB[(size_t)(2*q)*n2+t*n_a+u]   = Ja[t*n_a+u];
+                    YAB[(size_t)(2*q+1)*n2+t*n_a+u] = (a!=b) ? Ja[u*n_a+t] : 0.0;
+                    YK [(size_t)q*n2+t*n_a+u]       = Ja[t*n_a+u]-Ja[u*n_a+t];
                 }
-                
             }
-                
-            
         }
-    
-       delete[] Ja;
-    
-    
+#pragma omp parallel
+        {
+            std::vector<double> GAB((size_t)2*np*N_fit), GK((size_t)np*N_fit);
+#pragma omp for schedule(dynamic)
+            for(int tu=0; tu<n2; tu++){
+                const int t=tu/n_a, u=tu%n_a;
+                for(int q=0; q<np; q++){
+                    const int a=pa[p0+q], b=pb[p0+q];
+                    const double y1=YAB[(size_t)(2*q)*n2+tu], y2=YAB[(size_t)(2*q+1)*n2+tu], yk=YK[(size_t)q*n2+tu];
+                    const double dE0=e_a[t]+e_a[u]-e_v[a]-e_v[b];
+                    for(int i_f=0; i_f<N_fit; i_f++){
+                        const double dE=dE0+E_fit[i_f];
+                        const double d=dE/(dE*dE+edshift);
+                        GAB[(size_t)(2*q)*N_fit+i_f]=y1*d;
+                        GAB[(size_t)(2*q+1)*N_fit+i_f]=y2*d;
+                        GK[(size_t)q*N_fit+i_f]=yk*d;
+                    }
+                }
+                cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,2*np,1.0,YAB.data(),n2,GAB.data(),N_fit,1.0,
+                            RF_PV_AB+(size_t)tu*n2*N_fit,N_fit);
+                cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,n2,N_fit,np,1.0,YK.data(),n2,GK.data(),N_fit,1.0,
+                            RF_PV_JK+(size_t)(u*n_a+t)*n2*N_fit,N_fit);
+            }
+        }
     }
-    
-//     #pragma omp parallel for
-    for(long j=0; j<num_threads;j++)
-        for(long i=0; i<n_a*n_a*n_a*n_a*N_fit;i++)
-            RF_PV_JK[i]+=JK_th[j][i];
-//     #pragma omp parallel for
-    for(long j=0; j<num_threads;j++)
-        for(long i=0; i<n_a*n_a*n_a*n_a*N_fit;i++)
-            RF_PV_AB[i]+=AB_th[j][i];
-        
-    for(int i=0;i<num_threads;i++)delete[] JK_th[i];
-    delete[] JK_th;
-    
-    for(int i=0;i<num_threads;i++)delete[] AB_th[i];
-    delete[] AB_th;
+    set_blas_par();
     return 0;
 }
 
