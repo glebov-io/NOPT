@@ -124,6 +124,17 @@ inline int nopt_initialize(int ext_num_threads){
     //num_threads is set by nopt_parallel_init
     omp_set_num_threads(num_threads);
     set_blas_par();
+    // Work is split by num_threads, so every region needs the full team.
+    int team = 0;
+#pragma omp parallel
+    {
+#pragma omp master
+        team = omp_get_num_threads();
+    }
+    if(team<num_threads){
+        fprintf(out_stream,"ERROR: OpenMP gives %d of NUM_THREADS=%d threads (OMP_THREAD_LIMIT or the BLAS library's thread cap); set NUM_THREADS<=%d\n",team,num_threads,team);
+        exit(EXIT_FAILURE);
+    }
     
     nopt_engines_initialize();
     

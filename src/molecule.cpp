@@ -3778,8 +3778,8 @@ int molecule::gen_1el_data(){
         make_symmetry();
     }
     
+    n_mo = D5 ? n_ao_d5 : n_ao;
     if(D5){
-        n_mo=n_ao_d5;
         make_D5_matr();
     }
     // else{

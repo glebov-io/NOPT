@@ -12,6 +12,7 @@
 # include "localizer.h"
 # include "cdas_gno.h"
 # include "dmrg_log.h"         // per-solve block2 sweep log
+# include <algorithm>
 #ifdef NOPT_HAS_BLOCK2
 # include "block2_casci_wrap.h"
 #endif
@@ -164,7 +165,10 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[i];
     }
     if(cdas->HOMO){
-        for(int i=0; i<n_act;i++)eps_a[i]=eps_a[M->n_act_el_alp[0]-1];
+        //the n_alp-th lowest active energy: under $SYMM eps_a ascends per irrep, not overall
+        std::vector<double> e_act(eps_a, eps_a+n_act);
+        std::nth_element(e_act.begin(), e_act.begin()+M->n_act_el_alp[0]-1, e_act.end());
+        for(int i=0; i<n_act;i++)eps_a[i]=e_act[M->n_act_el_alp[0]-1];
     }
     if(cdas->sing_e){
         for(int i=0; i<n_act;i++)eps_a[i]=cdas->eps[0];
@@ -209,6 +213,8 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
             memcpy(ACT_MO, TMP_MO, sizeof(double)*M->n_act_orb[0]*M->n_ao);
             delete[] TMP_MO;
             copy_MO_to_CVEC(M->MO_VEC,n_cor,n_act, n_virt,n_ao,COR_VEC,ACT_VEC,VIRT_VEC);
+            //ACT_CVEC must follow MO_VEC: the properties contract the PT-stage RDMs with it
+            CAS->update_ACT_CVEC();
 
             loc_realized = 1;
             fprintf(out_stream,"active-space localization converged; running localized\n");
@@ -391,6 +397,7 @@ int CDAS_PT2(molecule * M, cdas_par * cdas, char * job_name){
         if(ACT_MO_save != nullptr){
             memcpy(M->MO_VEC+M->n_cor_orb*M->n_ao, ACT_MO_save, sizeof(double)*M->n_act_orb[0]*M->n_ao);
             delete[] ACT_MO_save;
+            CAS->update_ACT_CVEC();
         }
 
     };

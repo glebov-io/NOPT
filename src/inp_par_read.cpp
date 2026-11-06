@@ -2296,6 +2296,23 @@ int inp_par::read(char * ext_inp){
     
     read_p_group(inp_name);
     
+    // One PT stage per run: each leaves the orbitals, CI vectors or mc on the molecule in its own state.
+    if((xmc.y!=0)+(cdas.y!=0)+(dsrg.y!=0)+(mp2.y!=0)>1){
+        fprintf(out_stream,"ERROR: XMC, CDAS, DSRG and MP2 cannot be combined in one run; use one input per PT method\n");
+        exit(EXIT_FAILURE);
+    }
+    // CIS leaves H_AO in the MO basis, which every CAS-family stage reads as the AO core Hamiltonian.
+    if(cis.y && (cas.y||xmc.y||cdas.y||dsrg.y)){
+        fprintf(out_stream,"ERROR: CIS cannot be combined with CAS/XMCQDPT/CDAS/DSRG in one run "
+                           "(it leaves the core Hamiltonian in the MO basis)\n");
+        exit(EXIT_FAILURE);
+    }
+    // CIS builds its two-electron integrals from the RI tensors only.
+    if(cis.y && RI==0){
+        fprintf(out_stream,"ERROR: CIS requires RI=1\n");
+        exit(EXIT_FAILURE);
+    }
+    
     mol_line       = count_groups(inp_name,      mol_group      ,      mol_group_end);
     
     int mc=0;
