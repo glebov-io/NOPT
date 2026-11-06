@@ -87,6 +87,12 @@ vector<const char *>converger_sxpt_kw{{"sxpt"}};
 
 vector<const char *>cas_lbfgs_kw{{"lbfgs"}};
 
+vector<const char *>cas_strict_symm_kw{{"strict_symm"}};
+
+vector<const char *>cas_strict_symm_on_kw{{"on"}};
+
+vector<const char *>cas_strict_symm_off_kw{{"off"}};
+
 vector<const char *>num_state_kw{{"n_s"},
                                  {"numstate"},
                                  {"num_state"}};
@@ -245,6 +251,8 @@ vector<const char *>avas_group_end{{"$avasend"},
 vector<const char *>avas_atoms_kw{{"atoms"}};
 vector<const char *>avas_shells_kw{{"shells"}};
 vector<const char *>avas_ref_basis_kw{{"ref_basis"}};
+vector<const char *>avas_ncore_kw{{"ncore"}};
+vector<const char *>avas_canonicalize_kw{{"canonicalize"}};
 
 vector<const char *>MO_group_start{{"$vec1"},
                                    {"$vec"},

@@ -37,18 +37,10 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(the SO/GRPP path is determinant-only)\n");
             exit(EXIT_FAILURE);
         }
-        // The dmrg backend fills the active orbital energies from a dense diagonalization of the
-        // active Fock block, the aldet one per irrep, so away from C1 the two orderings differ.
-        if(P->cdas.y && IS_SYM && (P->cdas.HOMO || P->cdas.orb_e)){
-            fprintf(out_stream,"ERROR: HOMO and USE_ORB_FOR_ENERGY pick an active orbital by position, and that "
-                               "position is not the same for the dmrg and aldet backends under symmetry\n"
-                               "       (use ENERGY or IPEA)\n");
-            exit(EXIT_FAILURE);
-        }
     }
 
     // AVAS rewrites the reference orbitals so that the active window holds the target atomic
-    // valence span. It fills only the window CAS defines, and it mixes irreps.
+    // valence span. It fills only the window CAS defines; under $SYMM it rotates per irrep.
     if(P->avas.y){
         if(!P->cas.y){
             fprintf(out_stream,"ERROR: $AVAS needs CAS=1 (nothing else consumes the steered active window)\n");
@@ -64,8 +56,9 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(two active-space steering mechanisms)\n");
             exit(EXIT_FAILURE);
         }
-        if(IS_SYM){
-            fprintf(out_stream,"ERROR: $AVAS supports C1 only (the rotation mixes irreps)\n");
+        if(IS_SYM && Qm->S.n_rep!=Qm->S.n_op){
+            fprintf(out_stream,"ERROR: $AVAS supports groups with one-dimensional irreps only (Cs, Ci, C2, C2v, C2h, "
+                               "D2, D2h); use one of them or C1\n");
             exit(EXIT_FAILURE);
         }
         if(Qm->PP.size()){
@@ -73,6 +66,13 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(an ECP removes the reference shells from the calculation basis)\n");
             exit(EXIT_FAILURE);
         }
+    }
+
+    // DSRG-PT2 runs without point-group symmetry only (IS_SYM is 0 for group=C1).
+    if(P->dsrg.y && IS_SYM){
+        fprintf(out_stream,"ERROR: DSRG-PT2 does not support point-group symmetry; "
+                           "run without $SYMM (or with group=C1)\n");
+        exit(EXIT_FAILURE);
     }
 
     Qm->gen_1el_data();

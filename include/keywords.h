@@ -30,6 +30,9 @@ extern vector<const char *>converger_kw         ;
 extern vector<const char *>converger_soscf_kw   ;
 extern vector<const char *>converger_sxpt_kw    ;
 extern vector<const char *>cas_lbfgs_kw         ;
+extern vector<const char *>cas_strict_symm_kw   ;
+extern vector<const char *>cas_strict_symm_on_kw;
+extern vector<const char *>cas_strict_symm_off_kw;
 extern vector<const char *>num_state_kw         ;
 
 extern vector<const char *>num_frozen_orb_kw    ;
@@ -105,6 +108,8 @@ extern vector<const char *>avas_group_end        ;
 extern vector<const char *>avas_atoms_kw         ;
 extern vector<const char *>avas_shells_kw        ;
 extern vector<const char *>avas_ref_basis_kw     ;
+extern vector<const char *>avas_ncore_kw         ;
+extern vector<const char *>avas_canonicalize_kw  ;
 extern vector<const char *>MO_group_start       ;
 extern vector<const char *>MO_text_group_start  ;
 extern vector<const char *>MO_group_b_start     ;

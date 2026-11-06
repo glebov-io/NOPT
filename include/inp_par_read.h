@@ -139,6 +139,8 @@ class avas_par
         std::vector<int> shell_l;  // angular momentum of each target nl shell
         std::vector<int> shell_atom; // 1-based atom each target label is bound to, 0 = every atom in atoms=
         std::string ref_basis;     // reference minimal basis the target shells are taken from
+        int ncore;                 // leading occupied orbitals left out of the projection, kept first in the core
+        int canonicalize;          // 1 = diagonalize the Fock matrix within each block after the selection
 
         avas_par();
         int read_group(char * inp);
@@ -158,6 +160,7 @@ class cas_par
         //orbital converger
         int converger;     // converger_kind: SOSCF (default) | SXPT
         int lbfgs;         // orbital L-BFGS history depth, 0 = bare step
+        int strict_symm;   // under $SYMM, unlabelled optimized orbitals: 1 abort, 0 rotate without symmetry
         //convergence
         int max_it;
         double e_conv;

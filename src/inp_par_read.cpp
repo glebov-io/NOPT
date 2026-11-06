@@ -214,6 +214,7 @@ cas_par::cas_par(){
     ci_solver = CISOLVER_ALDET;
     converger = CONVERGER_SOSCF;
     lbfgs     = CAS_LBFGS_DEFAULT;
+    strict_symm = 1;
     //convergence
     max_it = CAS_MAX_IT_DEFAULT;
     e_conv = CAS_EN_CON_DEFAULT;
@@ -416,6 +417,15 @@ int cas_par::read_line(char * inp){
         }
     }
 
+    if(key_word_comp(inp, cas_strict_symm_kw)){
+        if      (kw_to_kw_exact(inp, cas_strict_symm_kw, cas_strict_symm_on_kw )) strict_symm = 1;
+        else if (kw_to_kw_exact(inp, cas_strict_symm_kw, cas_strict_symm_off_kw)) strict_symm = 0;
+        else{
+            fprintf(out_stream,"ERROR: unknown STRICT_SYMM value; accepted: on, off\n");
+            exit(1);
+        }
+    }
+
     if(key_word_comp(inp, cas_track_kw)){
         track=1;
     }
@@ -539,6 +549,8 @@ int cas_par::write_info(int n_a, int n_b, int n_o, int n_c, int mult){
         fprintf(out_stream,"Maximum SX-PT step          :     %e\n",x_max);
     }
     else fprintf(out_stream,"Maximum SOSCF step          :     %e\n",x_max);
+    if(strict_symm==0)
+        fprintf(out_stream,"Unlabelled orbitals (strict_symm):  optimized without symmetry\n");
     fprintf(out_stream,"\n");
     if      (ci_solver==CISOLVER_ALDET){
         fprintf(out_stream,"CI solver:                        determinant CI (aldet)\n");
@@ -1251,6 +1263,8 @@ avas_par::avas_par(){
 
     y=0;
     ref_basis = AVAS_REF_BASIS_DEFAULT;
+    ncore        = AVAS_NCORE_DEFAULT;
+    canonicalize = AVAS_CANONICALIZE_DEFAULT;
 
 }
 
@@ -1309,6 +1323,12 @@ int avas_par::read_line(char * inp){
         if(tmp){ ref_basis=tmp; delete[] tmp; }
     }
 
+    if(key_word_comp(inp, avas_ncore_kw))
+        ncore = kw_to_i(inp, avas_ncore_kw, AVAS_NCORE_DEFAULT);
+
+    if(key_word_comp(inp, avas_canonicalize_kw))
+        canonicalize = kw_to_i(inp, avas_canonicalize_kw, AVAS_CANONICALIZE_DEFAULT);
+
     return 0;
 }
 
@@ -1326,6 +1346,10 @@ int avas_par::validate(){
     }
     if(ref_basis.empty()){
         fprintf(out_stream,"ERROR: $AVAS ref_basis must not be empty\n");
+        ok=0;
+    }
+    if((canonicalize!=0)&&(canonicalize!=1)){
+        fprintf(out_stream,"ERROR: $AVAS canonicalize=%d; accepted: 0 (off), 1 (on)\n",canonicalize);
         ok=0;
     }
     // duplicates would repeat reference functions and make the reference overlap singular
@@ -1388,7 +1412,10 @@ int avas_par::write_info() const {
         if(shell_atom[i])fprintf(out_stream," %d:%d%c",shell_atom[i],shell_n[i],avas_l_labels[shell_l[i]]);
         else             fprintf(out_stream," %d%c",shell_n[i],avas_l_labels[shell_l[i]]);
     }
-    fprintf(out_stream,"\n\n");
+    fprintf(out_stream,"\n");
+    fprintf(out_stream,"Excluded core orbitals:           %d\n",ncore);
+    fprintf(out_stream,"Canonicalization:                 %s\n",canonicalize?"on":"off");
+    fprintf(out_stream,"\n");
 
     return 0;
 }

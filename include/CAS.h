@@ -21,6 +21,7 @@ class CAS_engine{
         int rotate_orbs;
         
         int * rep_num;
+        bool mask_by_irrep = true;   // calc_grad zeroes the rotations between differently labelled orbitals
         
         //number of states
         int n_s;
