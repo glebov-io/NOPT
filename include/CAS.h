@@ -54,6 +54,10 @@ class CAS_engine{
         std::vector<double> C_loc_prev;           // previous frame's active orbitals, localized or
                                                   // canonical (n_ao x n_act)
 
+        // Exit code of the SCF loop, as the line printed after it reads: 0 not converged,
+        // 1 energy, 2 gradient, 3 step. -1 = no SCF run.
+        int scf_exit = -1;
+
         molecule * M;
         
         //H_calc data

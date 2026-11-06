@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <limits>
@@ -37,6 +38,12 @@ inline int next_dmrg_engine_id() {
     static std::atomic<int> counter{0};
     return counter++;
 }
+
+// One named set of states: per root a persistent single-root MPS and the scratch tag holding it.
+struct state_set {
+    std::vector<std::string> tags;
+    std::vector<std::shared_ptr<MPS<SU2, double>>> mps;
+};
 
 // -------------------------- engine: all block2 state ----------------------------------
 struct dmrgci_engine {
@@ -64,6 +71,9 @@ struct dmrgci_engine {
     std::vector<double> R_active;     // n_act x n_act, [a*n_act+p]
     bool have_rotation = false;
 
+    // Seed of the random MPS a cold solve starts from; 0 is the historical value.
+    int cold_seed = 0;
+
     // MPO simplification rule resolved once from cfg.low_m_opt: -1 unresolved, 0 off, 1 on.
     int low_m_opt_res = -1;
 
@@ -71,6 +81,11 @@ struct dmrgci_engine {
     std::shared_ptr<FCIDUMP<double>> fcidump;
     std::shared_ptr<HamiltonianQC<SU2, double>> hamil;
     std::shared_ptr<MPO<SU2, double>> mpo;
+    // Named operator handles. mpo always equals the handle of op_kind and dressed_mpo is
+    // (op_kind != OP_BARE); the general handles are null until imported, and are dropped
+    // wherever the bare MPO is rebuilt (they describe the orbitals it replaces).
+    std::shared_ptr<MPO<SU2, double>> mpo_bare, mpo_f, mpo_d;
+    int op_kind = OP_BARE;
     std::shared_ptr<MultiMPSInfo<SU2>> mps_info;  // persists solve -> RDM read-out
     std::shared_ptr<MultiMPS<SU2, double>> mps;   // the converged (state-averaged) wavefunction
     std::vector<double> d2_av;                    // state-averaged block2 2-RDM: one n_act^4 block
@@ -81,11 +96,12 @@ struct dmrgci_engine {
     std::vector<double> dmfull_cache;             // full n_s x n_s spin-summed 1-RDM (properties), delocalized
     bool dmfull_valid = false;                     // is dmfull_cache current for this solve?
 
-    // Bare-state snapshot for the dressed re-solve overlap: one persistent single-root MPS per
-    // root plus its scratch tag. snap_set is the storage slot calc_S answers for (-1 = none);
-    // dressed_mpo marks e.mpo as a dressed general MPO, never to be rebuilt from the bare FCIDUMP.
-    std::vector<std::shared_ptr<MPS<SU2, double>>> snap_mps;
-    std::vector<std::string> snap_tags;
+    // Named state sets and named MultiMPS checkpoints (name -> scratch tag), both persistent across
+    // solves. The set "snap" is the bare-state snapshot the dressed re-solve overlaps against, and
+    // snap_set is the storage slot calc_S answers for (-1 = none); dressed_mpo marks e.mpo as a
+    // dressed general MPO, never to be rebuilt from the bare FCIDUMP.
+    std::map<std::string, state_set> named_sets;
+    std::map<std::string, std::string> named_ckpt;
     int snap_set = -1;
     bool dressed_mpo = false;
 
@@ -105,6 +121,13 @@ struct dmrgci_engine {
     std::vector<double> last_two_dot_E;         // last two-site sweep's energy per root
     double last_trunc_de = 0.0;                 // stored MPS's RDM energy minus last_two_dot_E, max over roots
     double last_resolution = 0.0;               // sqrt of the final sweep's Davidson threshold: the solve's energy scale
+
+    // Records of the last branch solve (solve_branch only; a plain solve() leaves them alone).
+    double last_entry_dw = std::numeric_limits<double>::quiet_NaN(); // discarded weight of its first
+                                                // sweep: the truncation the branch enters with
+    double last_tail_dw = 0.0;                  // max discarded weight over the one-site tail
+    int last_tail_sweeps = 0;                   // one-site tail sweeps run
+    bool last_converged = false;                // max-over-roots |dE| below the stop tolerance
 
     dmrgci_engine(int n_act_, int n_elec_, int twos_, int twosz_, int mult_, int n_s_,
                   int print_number_, const dmrg_par &c)
@@ -154,10 +177,37 @@ void ensure_block2_runtime(const std::string &save_dir_root, double memory_gb,
 void remove_tag_files(const std::string &tag);
 void assert_stack_clean(const char *where);
 
+// A TOTAL 0/1/2/3-body operator in the native active basis as one spin-adapted general MPO on the
+// engine's frozen lattice: the localizing rotation and the reorder are applied inside, exactly as
+// the bare import does, and tag names the MPO. h3 may be null. Defined in block2_import_dressed.cpp.
+std::shared_ptr<MPO<SU2, double>> build_general_mpo(dmrgci_engine &e, const double *h1,
+                                                    const double *h2, const double *h3,
+                                                    double const_e, const std::string &tag);
+
 // One root of the state-averaged MultiMPS as a plain single-root MPS at a one-site end-center.
 // Defined in block2_dmrg.cpp; shared with the transition-RDM / overlap read-outs.
 std::shared_ptr<MPS<SU2, double>>
 extract_root_single(dmrgci_engine &e, int st, const std::string &xtag, const std::string &stag);
+
+// One-site sweeps closing every solve. Mirrors block2's default schedule, which ends two sweeps
+// into the noise-free stage in one-site mode (pyblock2/driver/parser.py sets twodot_to_onedot =
+// last_iter + 2 unless the input overrides it).
+inline constexpr int DMRG_ONEDOT_TAIL = 2;
+
+// Reload the retained MultiMPS of e.mps_info->tag fresh from disk: after any solve the in-memory
+// copy is a shell whose StateInfos dangle, so the on-disk copy is the authoritative one.
+void reload_retained_mps(dmrgci_engine &e);
+
+// Put the MPS back into a two-site center after a one-site tail and persist its structural record.
+void adjust_mps_two_dot(dmrgci_engine &e);
+
+// Move a one-site end-centered MPS to the other end so a bra and a ket share a center: a lossless
+// gauge sweep at the MPS's own bond dimension. Modifies the MPS it is given.
+void align_one_dot_center(dmrgci_engine &e, const std::shared_ptr<MPS<SU2, double>> &mps,
+                          int target);
+
+// Remove one named state set, files and entry; an unknown name is a no-op.
+void drop_state_set(dmrgci_engine &e, const std::string &name);
 
 // One root pair's spin-summed N-body density in block2's lattice order, from one general-NPDM
 // Expect sweep on transient single-root extracts. The result is unscaled (block2's convention);
