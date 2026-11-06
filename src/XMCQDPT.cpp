@@ -1,4 +1,5 @@
 # include "blas_link.h"
+# include "energy_result.h"
 # include "molecule2.h"
 # include "matr.h"
 # include "defaults.h"
@@ -612,6 +613,7 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     fprintf(out_stream,"\n");
     fprintf(out_stream,"E(CAS):\n");
     PrintEnergy(E0, n_s,0);
+    energy_result_record("xmc_cas","",-1,E0,n_s);
     
    if(xmc->d_only){
         set_zero_matr(S0PP,n_s*n_s);
@@ -622,6 +624,7 @@ int QDPT2(molecule * M, xmc_par * xmc, char * job_name){
     fprintf(out_stream,"\n");
     fprintf(out_stream,"E(MP2):\n");
     PrintEnergy(E0, n_s,1);
+    energy_result_record("xmcqdpt2","",-1,E0,n_s);
     fprintf(out_stream,"\n");
     fprintf(out_stream,"H(0-2) eigenvectors in the basis of initial states:\n");
     PrintRowVec(C,n_s,n_s);

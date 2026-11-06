@@ -5,6 +5,7 @@
 // basis, then drive the dsrg_sf_tensors core plus the batched CCVV/CAVV/CCAV terms.
 
 # include <cstdio>
+# include "energy_result.h"
 # include <cstdlib>
 # include <cmath>
 # include <vector>
@@ -328,6 +329,7 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
     fprintf(out_stream,"      DF CCAV                        = % .12f\n", E_CCAV);
     fprintf(out_stream,"\n  Correlation energy E(2)            = % .12f\n", E_corr);
     fprintf(out_stream,"  Total DSRG-PT2 energy              = % .12f\n", Eref + E_corr);
+    energy_result_record("dsrg_pt2",sa?"sa":"root",sa?-1:root,Eref+E_corr);
 
     if(sa && dsrg->relax==DSRG_RELAX_NONE)
         fprintf(out_stream,"\n  NOTE: sa=1 without relax=once reports the ensemble average only; per-state "
@@ -441,6 +443,7 @@ int SA_DSRG_PT2(molecule * M, dsrg_par * dsrg, char * job_name){
         }
         double e_relax=0.0, w_cov=0.0;
         for(int d=0;d<ns;d++){ e_relax += wd[d]*E_dressed[d]; w_cov += wd[d]; }
+        if(w_cov>0.0) energy_result_record("dsrg_pt2",sa?"sa_relaxed":"relaxed",sa?-1:root,e_relax);
 
         T.set_root_data(wref.data(), E_bare.data(), E_dressed.data(), root_map.data(), ns);
 
