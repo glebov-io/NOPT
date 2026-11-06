@@ -2,6 +2,7 @@
 
 //user
 # include "blas_link.h"
+# include "energy_result.h"
 # include "molecule.h"
 # include "timer.h"
 # include "defaults.h"
@@ -380,6 +381,7 @@ int CIS_engine::print_excited_states_info()
   printf("|    Information about excited states   |\n");
   printf("|_______________________________________|\n");
 
+  energy_result_record("cis","e_app",-1,E_app,n_s);
   for (int n=0; n < n_s; n++)
   {
     printf("\n\n");
