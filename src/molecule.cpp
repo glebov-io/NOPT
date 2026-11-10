@@ -434,13 +434,15 @@ int molecule::geom_read(){
             exit(0);
         }
         in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,0);
-        in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,1);
-        in.r_smart_fgets(line,&line_num,source_name,"reading atom");
-        z.read_xyz(line,2);
+        z.read_xyz(line,0);if(n_atoms>1){
+            in.r_smart_fgets(line,&line_num,source_name,"reading atom");
+            z.read_xyz(line,1);if(n_atoms>2){
+                in.r_smart_fgets(line,&line_num,source_name,"reading atom");
+                z.read_xyz(line,2);
+            }
+        }
     }
-    fprintf(out_stream,"\nWARNING: read_cl is blocked in the 3.0 version\n\n");
+    // fprintf(out_stream,"\nWARNING: read_cl is blocked in the 3.0 version\n\n");
     //read_cl(&in);
     
     n_el_full-=mol_charge;
@@ -3776,8 +3778,8 @@ int molecule::gen_1el_data(){
         make_symmetry();
     }
     
+    n_mo = D5 ? n_ao_d5 : n_ao;
     if(D5){
-        n_mo=n_ao_d5;
         make_D5_matr();
     }
     // else{
@@ -4105,7 +4107,12 @@ int molecule::diag_X_MO_block(double * X, int n0, int dim, double * U){
     
     if(dim==0)return 0;
     
-    if(IS_SYM==0){
+    // Under $SYMM a block holding a row without an irrep label is diagonalized whole and
+    // relabelled: the per-irrep branch would drop that row.
+    bool all_labelled = true;
+    if(IS_SYM)for(int i=0;i<dim;i++)if(rep_num[i+n0]<0||rep_num[i+n0]>=S.n_rep)all_labelled=false;
+    
+    if(IS_SYM==0||!all_labelled){
         double * F;
         if(U==nullptr)F = new double[dim*dim];
         else          F = U;
@@ -4139,6 +4146,7 @@ int molecule::diag_X_MO_block(double * X, int n0, int dim, double * U){
         if(U==nullptr)delete[] F;
         // delete[] ev;
         delete[] B;
+        if(IS_SYM)check_orb_symmetry();
     }
     else{
         int n_rep=S.n_rep;

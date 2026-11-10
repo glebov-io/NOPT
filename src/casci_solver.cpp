@@ -41,6 +41,96 @@ void casci_solver::import_dressed_operator(const double*, const double*, const d
     exit(EXIT_FAILURE);
 }
 
+// Defaults: only the DMRG/block2 backend holds named operator handles, so any other backend
+// reaching one of these is a driver mis-dispatch (our own contract) -- abort loudly.
+void casci_solver::import_named_operator(int, const double*, const double*, const double*, double) {
+    fprintf(out_stream, "ERROR: this CI backend does not import named operators"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::select_operator(int) {
+    fprintf(out_stream, "ERROR: this CI backend cannot select a named operator"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+// Defaults: branch solves, named state sets and named checkpoints are the DMRG/block2 backend's
+// alone; any other backend reaching one of these is a driver mis-dispatch (our own contract).
+int casci_solver::solve_branch(int, int, int, double, bool) {
+    fprintf(out_stream, "ERROR: this CI backend cannot continue its state set on a named operator"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::save_checkpoint(const char*) {
+    fprintf(out_stream, "ERROR: this CI backend cannot checkpoint its wavefunction set"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::load_checkpoint(const char*) {
+    fprintf(out_stream, "ERROR: this CI backend cannot restore a checkpointed wavefunction set"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::save_state_set(const char*) {
+    fprintf(out_stream, "ERROR: this CI backend cannot store a named state set"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::overlap_sets(const char*, const char*, double*) {
+    fprintf(out_stream, "ERROR: this CI backend does not overlap two named state sets"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::expect_set(const char*, int, double*) {
+    fprintf(out_stream, "ERROR: this CI backend does not provide named-operator expectation values"
+                        " on a named state set (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+void casci_solver::release_named_states() {
+    fprintf(out_stream, "ERROR: this CI backend holds no named state sets to release"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+// Defaults: the branch-solve records exist only where a branch solve does -- returning a placeholder
+// would be reported as a measurement, so abort loudly instead.
+double casci_solver::last_entry_dw() const {
+    fprintf(out_stream, "ERROR: this CI backend records no branch entry discarded weight"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+double casci_solver::last_tail_dw() const {
+    fprintf(out_stream, "ERROR: this CI backend records no one-site tail discarded weight"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+int casci_solver::last_tail_sweeps() const {
+    fprintf(out_stream, "ERROR: this CI backend records no one-site tail sweep count"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+bool casci_solver::last_solve_converged() const {
+    fprintf(out_stream, "ERROR: this CI backend records no per-solve convergence flag"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
+int casci_solver::last_max_bond_dim() const {
+    fprintf(out_stream, "ERROR: this CI backend has no bond dimension to measure"
+                        " (DMRG/block2 backend only)\n");
+    exit(EXIT_FAILURE);
+}
+
 // Defaults: both shipped backends implement the transition-density read-outs; reaching one
 // of these is a driver mis-dispatch (our own contract), so abort loudly, never return silence.
 #if 0  // full transition 2-RDM: no consumer, the driver reads G2_calc_diag. Revive for first-order
