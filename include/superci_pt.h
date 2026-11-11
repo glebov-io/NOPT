@@ -14,7 +14,7 @@ class CAS_engine;
 class superci_pt_engine{
     public:
         int    init(int ext_n_c, int ext_n_a, int ext_n_v, int ext_n_ao,
-                    const int * ext_rep_num, int ext_n_rep, double ext_x_max,
+                    const int * ext_rep_num, int ext_n_rep, bool ext_sym, double ext_x_max,
                     int ext_lbfgs);
         double calc(const double * G);      // max|g| over the three rotatable blocks
         double step(CAS_engine * CAS, double s_conv);   // build kappa from the L-BFGS direction; apply it unless max|T| < s_conv; returns max|T|
@@ -24,6 +24,7 @@ class superci_pt_engine{
     private:
         int n_c, n_a, n_v, n_ao, n_mo, n_rep;
         const int * rep_num;
+        bool   sym;                          // blocks and pencils per irrep; false: one block, labels all -1
         double x_max;
         double app_max;
         bool   kept_changed;                 // a pencil's kept metric set changed this macro-iteration

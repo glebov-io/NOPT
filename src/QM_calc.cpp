@@ -15,6 +15,7 @@
 # include "defaults.h"
 #include "timer.h"
 #include <cstring>
+#include <algorithm>
 # include "grabbers.h"
 # include "mp2.h"
 # include "avas.h"
@@ -23,6 +24,9 @@ extern coord_list C;
 
 int single_point_calc( inp_par * P, molecule * Qm){ 
         
+    // Start empty: a stage that publishes nothing must not hand on the previous geometry's energies.
+    E_grabbed.clear();
+
     // XMCQDPT needs the determinant CI object the DMRG backend does not provide; the relativistic
     // (SO) CDAS path is likewise determinant-only. Non-relativistic CDAS runs through CDAS_PT2
     // below (SO is a global fixed at parse time, so it is already valid here).
@@ -37,18 +41,10 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(the SO/GRPP path is determinant-only)\n");
             exit(EXIT_FAILURE);
         }
-        // The dmrg backend fills the active orbital energies from a dense diagonalization of the
-        // active Fock block, the aldet one per irrep, so away from C1 the two orderings differ.
-        if(P->cdas.y && IS_SYM && (P->cdas.HOMO || P->cdas.orb_e)){
-            fprintf(out_stream,"ERROR: HOMO and USE_ORB_FOR_ENERGY pick an active orbital by position, and that "
-                               "position is not the same for the dmrg and aldet backends under symmetry\n"
-                               "       (use ENERGY or IPEA)\n");
-            exit(EXIT_FAILURE);
-        }
     }
 
     // AVAS rewrites the reference orbitals so that the active window holds the target atomic
-    // valence span. It fills only the window CAS defines, and it mixes irreps.
+    // valence span. It fills only the window CAS defines; under $SYMM it rotates per irrep.
     if(P->avas.y){
         if(!P->cas.y){
             fprintf(out_stream,"ERROR: $AVAS needs CAS=1 (nothing else consumes the steered active window)\n");
@@ -64,8 +60,9 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(two active-space steering mechanisms)\n");
             exit(EXIT_FAILURE);
         }
-        if(IS_SYM){
-            fprintf(out_stream,"ERROR: $AVAS supports C1 only (the rotation mixes irreps)\n");
+        if(IS_SYM && Qm->S.n_rep!=Qm->S.n_op){
+            fprintf(out_stream,"ERROR: $AVAS supports groups with one-dimensional irreps only (Cs, Ci, C2, C2v, C2h, "
+                               "D2, D2h); use one of them or C1\n");
             exit(EXIT_FAILURE);
         }
         if(Qm->PP.size()){
@@ -73,6 +70,13 @@ int single_point_calc( inp_par * P, molecule * Qm){
                                "(an ECP removes the reference shells from the calculation basis)\n");
             exit(EXIT_FAILURE);
         }
+    }
+
+    // DSRG-PT2 runs without point-group symmetry only (IS_SYM is 0 for group=C1).
+    if(P->dsrg.y && IS_SYM){
+        fprintf(out_stream,"ERROR: DSRG-PT2 does not support point-group symmetry; "
+                           "run without $SYMM (or with group=C1)\n");
+        exit(EXIT_FAILURE);
     }
 
     Qm->gen_1el_data();
@@ -237,15 +241,31 @@ int num_grad_calc_Z( inp_par * P, molecule * Qm, molecule * Mm, int u){
     return 0;
 }
 
+// E_grabbed[k] from the last single point; aborts when that run published k or fewer energies.
+static double E_grabbed_at(int k){
+    if(k<0 || k>=(int)E_grabbed.size()){
+        fprintf(out_stream,"ERROR: energy %d requested, but the single point published %d energies\n",k,(int)E_grabbed.size());
+        exit(EXIT_FAILURE);
+    }
+    return E_grabbed[k];
+}
+
 int hessian_calc(inp_par * P, molecule * Qm){
     
     grab_E=1;
     
+    // One Hessian per published energy, at most n_s: relativistic CDAS publishes its whole spectrum.
+    single_point_calc_with_refresh(P,Qm);
+    if(E_grabbed.empty()){
+        fprintf(out_stream,"ERROR: the single point at the reference geometry published no energy to differentiate\n");
+        exit(EXIT_FAILURE);
+    }
+    size_t num_states = std::min(E_grabbed.size(), (size_t)P->cas.n_s);
+
     FILE * hess=fopen("hess.log","w");
     FILE * hess_steps=fopen("hess_steps.log","w");
     
     int n_c=3*Qm->n_atoms;
-    size_t num_states = P->cas.n_s;
     // size_t num_states = 1;
     double Hessian[num_states][n_c][n_c];
     memset(Hessian, 0, sizeof(Hessian)); // a VLA cannot take an initializer (clang rejects it)
@@ -263,7 +283,7 @@ int hessian_calc(inp_par * P, molecule * Qm){
                 single_point_calc_with_refresh(P,Qm);
                 
                 for(int k=0; k<num_states; k++){
-                    Ea[k]=E_grabbed[k];
+                    Ea[k]=E_grabbed_at(k);
                 }
 
                 Qm->atom_coord[i]-=0.01;
@@ -276,7 +296,7 @@ int hessian_calc(inp_par * P, molecule * Qm){
                 single_point_calc_with_refresh(P,Qm);
 
                 for(int k=0; k<num_states; k++){
-                    Eb[k]=E_grabbed[k];
+                    Eb[k]=E_grabbed_at(k);
                 }
 
                 Qm->atom_coord[i]-=0.01;
@@ -289,7 +309,7 @@ int hessian_calc(inp_par * P, molecule * Qm){
                 single_point_calc_with_refresh(P,Qm);
 
                 for(int k=0; k<num_states; k++){
-                    Ec[k]=E_grabbed[k];
+                    Ec[k]=E_grabbed_at(k);
                 }
 
                 Qm->atom_coord[i]+=0.01;
@@ -302,7 +322,7 @@ int hessian_calc(inp_par * P, molecule * Qm){
                 single_point_calc_with_refresh(P,Qm);
 
                 for(int k=0; k<num_states; k++){
-                    Ed[k]=E_grabbed[k];
+                    Ed[k]=E_grabbed_at(k);
                 }
 
                 Qm->atom_coord[i]+=0.01;
@@ -372,7 +392,7 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
     single_point_calc(P,Qm);
     
     double E0, Ef, Eb, E_old;
-    E0=E_grabbed[n_s];
+    E0=E_grabbed_at(n_s);
     E_old = E0+100.0;
     
     FILE * grad=fopen("grad.log","w");
@@ -402,7 +422,7 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
             
 //             Qm->GAMESS_geom_print("0f.out");
             single_point_calc(P,Qm);
-            Ef=E_grabbed[n_s];
+            Ef=E_grabbed_at(n_s);
 //             fprintf(out_stream,"E_0f= %.10f\n",Ef);
             
             Qm->atom_coord[i]-=0.01;
@@ -415,7 +435,7 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
             
 //             Qm->GAMESS_geom_print("0b.out");
             single_point_calc(P,Qm);
-            Eb=E_grabbed[n_s];
+            Eb=E_grabbed_at(n_s);
             Qm->atom_coord[i]+=0.01;
             
             G[i]=0.5*(Ef-Eb)/0.01;
@@ -433,7 +453,7 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
         
         Qm->GAMESS_geom_print("current.out");
         single_point_calc(P,Qm);
-        E0=E_grabbed[n_s];
+        E0=E_grabbed_at(n_s);
         s_max=0;
         g_max=0;
         for(int j=0;j<n_c;j++){

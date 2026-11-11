@@ -41,7 +41,7 @@ double max_abs(const double * x, long n){
 
 
 int superci_pt_engine::init(int ext_n_c, int ext_n_a, int ext_n_v, int ext_n_ao,
-                            const int * ext_rep_num, int ext_n_rep, double ext_x_max,
+                            const int * ext_rep_num, int ext_n_rep, bool ext_sym, double ext_x_max,
                             int ext_lbfgs){
 
     n_c   = ext_n_c;
@@ -51,6 +51,7 @@ int superci_pt_engine::init(int ext_n_c, int ext_n_a, int ext_n_v, int ext_n_ao,
     n_mo  = n_c+n_a+n_v;
     n_rep = ext_n_rep;
     rep_num = ext_rep_num;
+    sym   = ext_sym;
     x_max = ext_x_max;
     app_max = 0.0;
     pp.reported = false;
@@ -61,18 +62,6 @@ int superci_pt_engine::init(int ext_n_c, int ext_n_a, int ext_n_v, int ext_n_ao,
     ph.keep.assign(std::max(n_rep,1), -1);
     pp.nd = 0;
     ph.nd = 0;
-
-    // Irrep labels: the blocks and pencils are solved per irrep, and an orbital outside them
-    // would sit in no block at all, its rotations frozen at zero for the whole run.
-    if(IS_SYM!=0)
-    for(int p=0;p<n_mo;p++){
-        const int r = rep_num[p];
-        if(r<0 || r>=n_rep){
-            fprintf(out_stream,"ERROR: converger=sxpt needs an irrep label on every optimized orbital,"
-                               " but MO %d carries rep_num=%d; use converger=soscf\n", p, r);
-            exit(EXIT_FAILURE);
-        }
-    }
 
     lbfgs.init(ext_lbfgs, (size_t)n_c*n_a + (size_t)n_c*n_v + (size_t)n_a*n_v, x_max);
 
@@ -111,7 +100,7 @@ void superci_pt_engine::canonicalize_block(const double * F, int n0, int dim,
     if(dim==0) return;
 
     std::vector<int> reps;
-    if(IS_SYM==0) reps.push_back(-1);
+    if(!sym)      reps.push_back(-1);
     else          for(int r=0;r<n_rep;r++) reps.push_back(r);
 
     std::vector<int> mem;
@@ -146,7 +135,7 @@ double superci_pt_engine::canonical_residual(const double * F, int n0, int dim,
     if(dim<2) return 0.0;
 
     std::vector<int> reps;
-    if(IS_SYM==0) reps.push_back(-1);
+    if(!sym)      reps.push_back(-1);
     else          for(int r=0;r<n_rep;r++) reps.push_back(r);
 
     std::vector<int> mem;
@@ -247,7 +236,7 @@ void superci_pt_engine::solve_pencil(const double * M_in, const double * metric,
     if(n_a==0) return;
 
     std::vector<int> reps;
-    if(IS_SYM==0) reps.push_back(-1);
+    if(!sym)      reps.push_back(-1);
     else          for(int r=0;r<n_rep;r++) reps.push_back(r);
 
     std::vector<int> mem;
@@ -269,7 +258,7 @@ void superci_pt_engine::solve_pencil(const double * M_in, const double * metric,
             if(n_r[k]>TAU_DROP ) n_lo++;
             if(n_r[k]>TAU_ADMIT) n_hi++;
         }
-        int & prev = P.keep[IS_SYM==0 ? 0 : reps[ir]];
+        int & prev = P.keep[!sym ? 0 : reps[ir]];
         int nk = n_lo;
         if(prev>=0 && n_lo>prev) nk = std::max(prev, n_hi);
         if(prev>=0 && nk!=prev) kept_changed = true;
