@@ -10,6 +10,7 @@
 #include "common_vars.h"
 
 class res_fit_data;
+struct rf_rep_list;
 
 struct ResFitSeeds{
     std::vector<double> PS, PH, PV_JK, PV_AB, P3_JK, P3_AB;     // N_fit innermost
@@ -19,12 +20,15 @@ struct ResFitSeeds{
 // CI and weight seeds), cibar - derivative with respect to the CI vectors (layout of the vectors handed to the routine), Cbar - derivative with respect to the
 // interpolation weights C_fit, [(det*n_s + i_s)*(2 n_fit_pol+1) + l].
 // Rbar may hold a window of the grid only: grid points f0 .. f0 + nb - 1, [index * nb + f - f0] (the whole grid: f0 = 0, nb = Nf).
+// Rfwd may hold a window too: grid points rf0 .. rf0 + rnb - 1, [index * rnb + f - rf0] (rnb = 0: the whole grid, [index * Nf + f]); only the part of every
+// interpolation stencil inside it is then added, and a determinant none of whose stencils reaches the window (of Rbar or of Rfwd) is skipped.
 struct ResFitAdjOut{
     double * Rbar = nullptr;
     const double * Rfwd = nullptr;
     double * cibar = nullptr;
     double * Cbar = nullptr;
     int Nf = 0, f0 = 0, nb = 0;
+    int rf0 = 0, rnb = 0;
 };
 
 // The complete derivative of  Phi = sum_{ij} W_ij E2_ij  (E2 as res_fit_data::E2_calc contracts it, before any later symmetrization or rotation):
@@ -41,8 +45,8 @@ int res_fit_adj_0body(const double * W, int n_s, int ld, double * ci, int Na, in
 int res_fit_adj_1body(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_2body_AA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 int res_fit_adj_2body_AB(const double * W, int n_s, int ld, double * ci, int N, int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
-int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
-int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
+int res_fit_adj_3body_AAA(const double * W, int n_s, int ld, double * ci, int N, int na, int Na, int Nb, int * fa, int * vec_a, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th, const int * order = nullptr);
+int res_fit_adj_3body_AB(const double * W, int n_s, int ld, double * ci, int N, int Na, int Nb, const rf_rep_list & D, const rf_rep_list & S1, const ResFitAdjOut & o, int * L_fit, int * S_fit, double * C_fit, int N_fit, int i_th, int n_th);
 
 // All of E2_calc's contractions at once (the pair of coef / coef_bas variants).
 // with_3body = false leaves tables.P3_JK / P3_AB empty (the CI and grid derivatives still include the three-body terms); their seeds then come

@@ -79,6 +79,7 @@ energy record. The scripts below run it on the fixtures:
 |---|---|
 | `rhf_gradient.sh` | RHF, exact and RI; invariances, thread independence |
 | `casscf_gradient.sh`, `casscf_root_gradient.sh` | SA-CASSCF energy; individual roots, zero and unequal weights |
+| `xmc_windows.sh` | XMCQDPT2 energy with the three-body tables in 50 windows of 6 grid points against the whole tables (1e-10 Eh) |
 | `xmc_gradient.sh`, `xmc_hard_cases.sh` | XMCQDPT2: equal, unequal and zero weights, butadiene cc-pVTZ with 7 states; next to conical intersections (H3, twisted ethylene) |
 | `dsrg_gradient.sh`, `dsrg_relax_gradient.sh` | DSRG-PT2, unrelaxed and relax=once: state-specific, a root of an SA reference (also of zero weight), the SA ensemble |
 | `opt_check.sh` | `run_opt` converges (RHF, SA-CASSCF energy, a CAS-SCF root, an XMCQDPT2 root) |

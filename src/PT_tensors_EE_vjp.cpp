@@ -583,9 +583,9 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans, nv * na, na * na, aux, 1.0, T.integrals->VA_RI_M, aux, T.integrals->AA_RI_M, aux, 0.0, VAAA.data(), na * na);
 
     // seeds on the accumulators
-    std::vector<double> yJK(n6, 0.0), yJJ(n6, 0.0), yMJ(n6, 0.0), yJM(n6, 0.0);
+    std::vector<double> yJKz(S.P3_JK ? 0 : n6, 0.0), yJJ(n6, 0.0), yMJ(n6, 0.0), yJM(n6, 0.0);
+    const double * yJK = S.P3_JK ? S.P3_JK : yJKz.data();          // the P3_JK seeds are the JK accumulator seeds
     std::vector<double> yHM(n4, 0.0), yMH(n4, 0.0), yHJ(n4, 0.0), yJH(n4, 0.0);
-    if(S.P3_JK) for(size_t k = 0; k < n6; k++) yJK[k] = S.P3_JK[k];
     if(S.PV_JK) for(int w = 0; w < na; w++) for(int t = 0; t < na; t++) for(int v = 0; v < na; v++) for(int u = 0; u < na; u++){
         const double z = S.PV_JK[id4(w, t, v, u)];
         yHM[id4(t, u, v, w)] += z;  yHM[id4(w, u, v, t)] -= z;  yMH[id4(t, w, v, u)] -= z;  yMH[id4(t, w, u, v)] += z;
@@ -595,19 +595,51 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
         yHJ[id4(t, w, v, u)] += z;  yJH[id4(u, t, w, v)] += z;  yHJ[id4(u, v, w, t)] += z;  yJH[id4(t, u, v, w)] += z;
         for(int x = 0; x < na; x++){ yJJ[id6(t, u, x, v, w, x)] += z;  yJJ[id6(u, t, x, w, v, x)] += z; }
     }
-    if(S.P3_AB) for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int x = 0; x < na; x++)
-                for(int v = 0; v < na; v++) for(int w = 0; w < na; w++) for(int y = 0; y < na; y++){
-        const double z = S.P3_AB[id6(t, u, x, v, w, y)];
-        yMJ[id6(t, u, v, y, w, x)] -= z;  yMJ[id6(t, u, w, y, v, x)] += z;
-        yJM[id6(x, t, y, w, v, u)] += z;  yJM[id6(x, u, y, w, v, t)] -= z;
-        yJJ[id6(t, x, v, w, y, u)] += z;  yJJ[id6(t, x, w, v, y, u)] -= z;
-        yJJ[id6(u, x, v, w, y, t)] -= z;  yJJ[id6(u, x, w, v, y, t)] += z;
+    // P3_AB[t,u,x,v,w,y] -> MJ, JM, JJ, gathered per output element (each line is the inverse of one term of the forward assembly)
+    if(S.P3_AB){
+        const double * Q = S.P3_AB;
+#pragma omp parallel for collapse(2) schedule(static)
+        for(int a = 0; a < na; a++) for(int b = 0; b < na; b++)
+        for(int c = 0; c < na; c++) for(int d = 0; d < na; d++) for(int e = 0; e < na; e++) for(int f = 0; f < na; f++){
+            const size_t o = id6(a, b, c, d, e, f);
+            yMJ[o] += -Q[id6(a, b, f, c, e, d)] + Q[id6(a, b, f, e, c, d)];
+            yJM[o] +=  Q[id6(b, f, a, e, d, c)] - Q[id6(f, b, a, e, d, c)];
+            yJJ[o] +=  Q[id6(a, f, b, c, d, e)] - Q[id6(a, f, b, d, c, e)] - Q[id6(f, a, b, c, d, e)] + Q[id6(f, a, b, d, c, e)];
+        }
     }
 
     std::vector<double> VAAAb((size_t)nv * na * n2, 0.0);
     std::vector<std::vector<double>> eip_th(num_threads, std::vector<double>(na, 0.0)), eea_th(num_threads, std::vector<double>(na, 0.0)), ev_th(num_threads, std::vector<double>(nv, 0.0));
     auto gref = [&](int a, int p, int q, int r) -> double { return VAAA[(((size_t)a * na + p) * na + q) * na + r]; };
     std::vector<double> sh_th(num_threads, 0.0);   // adjoint of the uniform denominator shift
+    // The six-index sums by matrix products. n = (t,u,v), m = (y,x,w), columns a:
+    //   F1[n,a] = g(t;v,u) - g(u;v,t), G1[n,a] = g(u;v,t), F2[m,a] = g(x;w,y) - g(y;w,x), G2[m,a] = g(x;w,y), rr[n,a];
+    //   X = yJK F2 + yMJ G2, Y = yJJ G2 + yJM F2 give rrb = F1 X + G1 Y, F1b = rr X, G1b = rr Y;
+    //   with U = rr F1, V = rr G1:  F2b = yJK^T U + yJM^T V, G2b = yJJ^T V + yMJ^T U.
+    const size_t mn = n3 * nv;
+    std::vector<double> F1m(mn), G1m(mn), F2m(mn), G2m(mn), RRm(mn), RPm(mn), Xm(mn), Ym(mn), Um(mn), Vm(mn), F2b(mn), G2b(mn);
+    std::vector<signed char> kindm(mn);
+#pragma omp parallel for schedule(static)
+    for(int a = 0; a < nv; a++)
+        for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int v = 0; v < na; v++){
+            const size_t n = ((size_t)t * na + u) * na + v, c = n * nv + a;   // also m = (y,x,w) = (t,u,v)
+            F1m[c] = gref(a, t, v, u) - gref(a, u, v, t);  G1m[c] = gref(a, u, v, t);
+            F2m[c] = gref(a, u, v, t) - gref(a, t, v, u);  G2m[c] = gref(a, u, v, t);       // y = t, x = u, w = v
+            double dE = -T.e_v[a] + T.e_IP[t] + T.e_IP[u] - T.e_EA[v] + pt_vjp_shift;
+            int kind = 0;                                              // 0: all four; 1: v == t; 2: v == u
+            if(v == t){ dE = -T.e_v[a] + T.e_IP[u] + pt_vjp_shift; kind = 1; }
+            if(v == u){ dE = -T.e_v[a] + T.e_IP[t] + pt_vjp_shift; kind = 2; }
+            RRm[c] = r_of(dE, eta); RPm[c] = rp_of(dE, eta); kindm[c] = (signed char)kind;
+        }
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n3, nv, n3, 1.0, yJK, n3, F2m.data(), nv, 0.0, Xm.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n3, nv, n3, 1.0, yMJ.data(), n3, G2m.data(), nv, 1.0, Xm.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n3, nv, n3, 1.0, yJJ.data(), n3, G2m.data(), nv, 0.0, Ym.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n3, nv, n3, 1.0, yJM.data(), n3, F2m.data(), nv, 1.0, Ym.data(), nv);
+    for(size_t c = 0; c < mn; c++){ Um[c] = RRm[c] * F1m[c]; Vm[c] = RRm[c] * G1m[c]; }
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n3, nv, n3, 1.0, yJK, n3, Um.data(), nv, 0.0, F2b.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n3, nv, n3, 1.0, yJM.data(), n3, Vm.data(), nv, 1.0, F2b.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n3, nv, n3, 1.0, yJJ.data(), n3, Vm.data(), nv, 0.0, G2b.data(), nv);
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n3, nv, n3, 1.0, yMJ.data(), n3, Um.data(), nv, 1.0, G2b.data(), nv);
 #pragma omp parallel
     {
         const int th = omp_get_thread_num();
@@ -616,6 +648,7 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
             double * gb = VAAAb.data() + (size_t)a * na * n2;           // [p][q][r] slice of this a
             auto G = [&](int p, int q, int r) -> double { return gref(a, p, q, r); };
             auto Gb = [&](int p, int q, int r) -> double & { return gb[((size_t)p * na + q) * na + r]; };
+            // A.H_AV is written only in column a, which this thread owns: no atomics
             // ---- terms with the two-index denominators (H) ----
             for(int t = 0; t < na; t++){
                 const double dEH = -T.e_v[a] + T.e_IP[t] + pt_vjp_shift;
@@ -627,9 +660,7 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     const double pb = S.PH ? S.PH[t * na + w] : 0.0;
                     dEHb += pb * H1 * H2 * rHp;
                     if(A.H_AV){
-#pragma omp atomic
                         A.H_AV[t * nv + a] += pb * H2 * rH;
-#pragma omp atomic
                         A.H_AV[w * nv + a] += pb * H1 * rH;
                     }
                 }
@@ -638,7 +669,6 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     const double hm = yHM[id4(t, y, x, w)], hj = yHJ[id4(t, y, x, w)];
                     dEHb += (hm * H1 * F2 + hj * H1 * G2) * rHp;
                     if(A.H_AV){
-#pragma omp atomic
                         A.H_AV[t * nv + a] += (hm * F2 + hj * G2) * rH;
                     }
                     const double F2b = hm * H1 * rH, G2b = hj * H1 * rH;
@@ -646,24 +676,16 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                 }
                 eip_th[th][t] += dEHb;  ev_th[th][a] -= dEHb; sh_th[th] += dEHb;
             }
-            // ---- terms with the three-index denominators ----
-            for(int u = 0; u < na; u++) for(int v = 0; v < na; v++) for(int t = 0; t < na; t++){
-                double dE = -T.e_v[a] + T.e_IP[t] + T.e_IP[u] - T.e_EA[v] + pt_vjp_shift;
-                int kind = 0;                                              // 0: all four; 1: v == t; 2: v == u
-                if(v == t){ dE = -T.e_v[a] + T.e_IP[u] + pt_vjp_shift; kind = 1; }
-                if(v == u){ dE = -T.e_v[a] + T.e_IP[t] + pt_vjp_shift; kind = 2; }
-                const double rr = r_of(dE, eta), rrp = rp_of(dE, eta);
-                const double F1 = G(t, v, u) - G(u, v, t), G1 = G(u, v, t);
-                double rrb = 0.0, F1b = 0.0, G1b = 0.0;
-                for(int y = 0; y < na; y++) for(int x = 0; x < na; x++) for(int w = 0; w < na; w++){
-                    const double F2 = G(x, w, y) - G(y, w, x), G2 = G(x, w, y);
-                    const size_t k = id6(t, u, v, y, x, w);
-                    const double a1 = yJK[k], a2 = yJJ[k], a3 = yMJ[k], a4 = yJM[k];
-                    rrb += a1 * F1 * F2 + a2 * G1 * G2 + a3 * F1 * G2 + a4 * G1 * F2;
-                    F1b += rr * (a1 * F2 + a3 * G2);
-                    G1b += rr * (a2 * G2 + a4 * F2);
-                    const double F2b = rr * (a1 * F1 + a4 * G1), G2b = rr * (a2 * G1 + a3 * F1);
-                    Gb(x, w, y) += F2b + G2b;  Gb(y, w, x) -= F2b;
+            // ---- terms with the three-index denominators (the six-index sums from the products above) ----
+            for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int v = 0; v < na; v++){
+                const size_t c = (((size_t)t * na + u) * na + v) * nv + a;
+                const int kind = kindm[c];
+                const double rr = RRm[c], rrp = RPm[c];
+                const double F1 = F1m[c], G1 = G1m[c];
+                double rrb = F1 * Xm[c] + G1 * Ym[c], F1b = rr * Xm[c], G1b = rr * Ym[c];
+                {   // F2b, G2b at m = (y,x,w) = (t,u,v): g(x;w,y) gets F2b + G2b, g(y;w,x) gets -F2b
+                    const double f2b = F2b[c], g2b = G2b[c];
+                    Gb(u, v, t) += f2b + g2b;  Gb(t, v, u) -= f2b;
                 }
                 // MH and JH: [t,u,v,w] with H_AV[w,a]
                 for(int w = 0; w < na; w++){
@@ -672,7 +694,6 @@ int pt_vjp_EE_AV(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     rrb += (mh * F1 + jh * G1) * H2;
                     F1b += rr * mh * H2;  G1b += rr * jh * H2;
                     if(A.H_AV){
-#pragma omp atomic
                         A.H_AV[w * nv + a] += rr * (mh * F1 + jh * G1);
                     }
                 }
@@ -718,20 +739,22 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
     std::vector<double> CAAA((size_t)nc * na * n2);
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans, nc * na, na * na, aux, 1.0, T.integrals->CA_RI_M, aux, T.integrals->AA_RI_M, aux, 0.0, CAAA.data(), na * na);
 
-    std::vector<double> ySS(n6, 0.0), yOS(n6, 0.0), yMH(n4, 0.0), yHM(n4, 0.0), yJH(n4, 0.0), yHJ(n4, 0.0), yHH(n2, 0.0);
+    // the two six-index accumulators receive identical values, so only their sum enters: ySS and yOS are one array here
+    std::vector<double> Ysum(n6, 0.0), yMH(n4, 0.0), yHM(n4, 0.0), yJH(n4, 0.0), yHJ(n4, 0.0), yHH(n2, 0.0);
+    std::vector<double> & ySS = Ysum, & yOS = Ysum;
     // ---- seeds on the accumulators: transpose of the final assembly (generated) ----
-    if(S.P3_JK){
-        for(int t=0; t<na; t++)
-        for(int v=0; v<na; v++)
-        for(int u=0; u<na; u++)
-        for(int w=0; w<na; w++)
-        for(int x=0; x<na; x++)
-        for(int y=0; y<na; y++)
-        {
-            ySS[((((t*na+v)*na+x)*na+y)*na+w)*na+u] += S.P3_JK[((((t*na+u)*na+v)*na+y)*na+x)*na+w];
-            ySS[((((t*na+v)*na+y)*na+x)*na+w)*na+u] -= S.P3_JK[((((t*na+u)*na+v)*na+y)*na+x)*na+w];
-            ySS[((((u*na+v)*na+x)*na+y)*na+w)*na+t] -= S.P3_JK[((((t*na+u)*na+v)*na+y)*na+x)*na+w];
-            ySS[((((u*na+v)*na+y)*na+x)*na+w)*na+t] += S.P3_JK[((((t*na+u)*na+v)*na+y)*na+x)*na+w];
+    // P3_JK[t,u,v,y,x,w] and P3_AB[t,u,x,v,w,y] -> ySS + yOS, gathered per output element (each term the inverse of one generated line)
+    if(S.P3_JK || S.P3_AB){
+        const double * P = S.P3_JK, * Q = S.P3_AB;
+#pragma omp parallel for collapse(2) schedule(static)
+        for(int a = 0; a < na; a++) for(int b = 0; b < na; b++)
+        for(int c = 0; c < na; c++) for(int d = 0; d < na; d++) for(int e = 0; e < na; e++) for(int f = 0; f < na; f++){
+            double z = 0.0;
+            if(P) z += P[id6(a, f, b, d, c, e)] - P[id6(a, f, b, c, d, e)] - P[id6(f, a, b, d, c, e)] + P[id6(f, a, b, c, d, e)];
+            if(Q) z += - Q[id6(a, e, f, b, d, c)] + Q[id6(e, a, f, b, d, c)] + Q[id6(a, e, f, d, b, c)] - Q[id6(e, a, f, d, b, c)]
+                       - Q[id6(a, f, e, b, c, d)] + Q[id6(f, a, e, b, c, d)] + Q[id6(a, f, e, c, b, d)] - Q[id6(f, a, e, c, b, d)]
+                       - Q[id6(f, e, a, c, d, b)] + Q[id6(e, f, a, c, d, b)] + Q[id6(f, e, a, d, c, b)] - Q[id6(e, f, a, d, c, b)];
+            Ysum[id6(a, b, c, d, e, f)] = z;
         }
     }
     if(S.PV_JK){
@@ -769,28 +792,6 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
             yMH[((u*na+v)*na+w)*na+t] += S.PV_JK[((u*na+t)*na+v)*na+w];
             yHM[((v*na+w)*na+t)*na+u] += S.PV_JK[((u*na+t)*na+v)*na+w];
             yHM[((w*na+v)*na+u)*na+t] += S.PV_JK[((u*na+t)*na+v)*na+w];
-        }
-    }
-    if(S.P3_AB){
-        for(int t=0; t<na; t++)
-        for(int u=0; u<na; u++)
-        for(int x=0; x<na; x++)
-        for(int v=0; v<na; v++)
-        for(int w=0; w<na; w++)
-        for(int y=0; y<na; y++)
-        {
-            yOS[((((t*na+v)*na+y)*na+w)*na+u)*na+x] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((u*na+v)*na+y)*na+w)*na+t)*na+x] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((t*na+w)*na+y)*na+v)*na+u)*na+x] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((u*na+w)*na+y)*na+v)*na+t)*na+x] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            ySS[((((t*na+v)*na+w)*na+y)*na+x)*na+u] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            ySS[((((u*na+v)*na+w)*na+y)*na+x)*na+t] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            ySS[((((t*na+w)*na+v)*na+y)*na+x)*na+u] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            ySS[((((u*na+w)*na+v)*na+y)*na+x)*na+t] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((x*na+y)*na+v)*na+w)*na+u)*na+t] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((x*na+y)*na+v)*na+w)*na+t)*na+u] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((x*na+y)*na+w)*na+v)*na+u)*na+t] += S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
-            yOS[((((x*na+y)*na+w)*na+v)*na+t)*na+u] -= S.P3_AB[((((t*na+u)*na+x)*na+v)*na+w)*na+y];
         }
     }
     if(S.PV_AB){
@@ -861,6 +862,26 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
     std::vector<double> CAAAb((size_t)nc * na * n2, 0.0);
     std::vector<std::vector<double>> ec_th(num_threads, std::vector<double>(nc, 0.0)), eip_th(num_threads, std::vector<double>(na, 0.0)), eea_th(num_threads, std::vector<double>(na, 0.0));
     std::vector<double> sh_th(num_threads, 0.0);   // adjoint of the uniform denominator shift
+    // The six-index sums by matrix products. n = (t,u,v), m = (y,x,w), columns i, Y = ySS + yOS (Ysum):
+    //   k1[n,i] = k(v;u,t), k2[m,i] = k(w;x,y) (the same matrix: m = (y,x,w) runs like n = (t,u,v)), Z = Y k2:  rrb = k1 Z, k1b = rr Z;
+    //   K2b = Y^T (rr k1) goes to k(w;x,y)
+    const size_t n3 = n2 * na, mn = n3 * nc;
+    std::vector<double> K1m(mn), RRm(mn), RPm(mn), Zm(mn), Wm(mn), K2b(mn);
+    std::vector<signed char> kindm(mn);
+#pragma omp parallel for schedule(static)
+    for(int i = 0; i < nc; i++)
+        for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int v = 0; v < na; v++){
+            const size_t c = (((size_t)t * na + u) * na + v) * nc + i;   // also m = (y,x,w) = (t,u,v)
+            K1m[c] = CAAA[(((size_t)i * na + v) * na + u) * na + t];
+            double dE = T.e_c[i] + T.e_IP[t] - T.e_EA[u] - T.e_EA[v] + pt_vjp_shift;
+            int kind = 0;                                                  // 0: all three; 1: t == u; 2: t == v
+            if(t == u){ dE = T.e_c[i] - T.e_EA[v] + pt_vjp_shift; kind = 1; }
+            if(t == v){ dE = T.e_c[i] - T.e_EA[u] + pt_vjp_shift; kind = 2; }
+            RRm[c] = r_of(dE, eta); RPm[c] = rp_of(dE, eta); kindm[c] = (signed char)kind;
+        }
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n3, nc, n3, 1.0, Ysum.data(), n3, K1m.data(), nc, 0.0, Zm.data(), nc);
+    for(size_t c = 0; c < mn; c++) Wm[c] = RRm[c] * K1m[c];
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n3, nc, n3, 1.0, Ysum.data(), n3, Wm.data(), nc, 0.0, K2b.data(), nc);
 #pragma omp parallel
     {
         const int th = omp_get_thread_num();
@@ -869,6 +890,7 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
             double * kb = CAAAb.data() + (size_t)i * na * n2;
             auto K  = [&](int p, int q, int r) -> double { return CAAA[(((size_t)i * na + p) * na + q) * na + r]; };
             auto Kb = [&](int p, int q, int r) -> double & { return kb[((size_t)p * na + q) * na + r]; };
+            // A.H_CA is written only in row i, which this thread owns: no atomics
             // two-index denominators (H terms)
             for(int t = 0; t < na; t++){
                 const double dEH = T.e_c[i] - T.e_EA[t] + pt_vjp_shift;
@@ -881,7 +903,6 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     dEHb += hh * H1 * H2 * rHp;
                     H1b += rH * hh * H2;
                     if(A.H_CA){
-#pragma omp atomic
                         A.H_CA[i * na + u] += rH * hh * H1;
                     }
                 }
@@ -893,27 +914,18 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     Kb(w, x, y) += rH * H1 * (hm + hj);  Kb(x, w, y) -= rH * H1 * hm;
                 }
                 if(A.H_CA){
-#pragma omp atomic
                     A.H_CA[i * na + t] += H1b;
                 }
                 ec_th[th][i] += dEHb;  eea_th[th][t] -= dEHb; sh_th[th] += dEHb;
             }
-            // three-index denominators
-            for(int v = 0; v < na; v++) for(int u = 0; u < na; u++) for(int t = 0; t < na; t++){
-                double dE = T.e_c[i] + T.e_IP[t] - T.e_EA[u] - T.e_EA[v] + pt_vjp_shift;
-                int kind = 0;                                                  // 0: all three; 1: t == u; 2: t == v
-                if(t == u){ dE = T.e_c[i] - T.e_EA[v] + pt_vjp_shift; kind = 1; }
-                if(t == v){ dE = T.e_c[i] - T.e_EA[u] + pt_vjp_shift; kind = 2; }
-                const double rr = r_of(dE, eta), rrp = rp_of(dE, eta);
-                const double k1 = K(v, u, t), k1x = K(u, v, t);
-                double rrb = 0.0, k1b = 0.0;
-                for(int y = 0; y < na; y++) for(int x = 0; x < na; x++) for(int w = 0; w < na; w++){
-                    const double k2 = K(w, x, y);
-                    const double a = ySS[id6(t, u, v, y, x, w)] + yOS[id6(t, u, v, y, x, w)];
-                    rrb += a * k1 * k2;
-                    k1b += rr * a * k2;
-                    Kb(w, x, y) += rr * a * k1;
-                }
+            // three-index denominators (the six-index sums from the products above)
+            for(int t = 0; t < na; t++) for(int u = 0; u < na; u++) for(int v = 0; v < na; v++){
+                const size_t c = (((size_t)t * na + u) * na + v) * nc + i;
+                const int kind = kindm[c];
+                const double rr = RRm[c], rrp = RPm[c];
+                const double k1 = K1m[c], k1x = K(u, v, t);
+                double rrb = k1 * Zm[c], k1b = rr * Zm[c];
+                Kb(v, u, t) += K2b[c];                                         // k(w;x,y) at (y,x,w) = (t,u,v)
                 for(int w = 0; w < na; w++){
                     const double H2 = T.H_CA[i * na + w];
                     const double mh = yMH[id4(t, u, v, w)], jh = yJH[id4(t, u, v, w)];
@@ -921,7 +933,6 @@ int pt_vjp_EE_CA(PT_tensors & T, const PTRawSeeds & S, PTInputAdj & A){
                     k1b += rr * (mh + jh) * H2;
                     Kb(u, v, t) -= rr * mh * H2;
                     if(A.H_CA){
-#pragma omp atomic
                         A.H_CA[i * na + w] += rr * (mh * (k1 - k1x) + jh * k1);
                     }
                 }

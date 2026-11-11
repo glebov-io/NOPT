@@ -3,8 +3,19 @@
 
 # include "RI.h"
 # include "aldet.h"
+# include <vector>
 
 class res_fit_data;
+
+// Replacement lists of the strings of one spin (CSR over the strings): for every string the strings E_tu E_vw (two electrons, t < u removed,
+// v < w added) or E_xy (one electron) lead to, with their sign and the orbital part of the table index, in the order the contraction loops of
+// res_fit.cpp enumerate them.
+struct rf_rep_list{
+    std::vector<long> off;      // entries of string i: off[i] .. off[i+1]-1
+    std::vector<int> ext;       // the new string
+    std::vector<int> orb;       // ((t N + u) N + v) N + w for the doubles, x N + y for the singles
+    std::vector<signed char> sgn;
+};
 
 class res_fit_data 
 {
@@ -48,6 +59,26 @@ class res_fit_data
         
         double * RF_P3_JK;
         double * RF_P3_AB;
+        
+        // The three-body tables in windows of the energy grid: RF_P3_JK/AB hold the grid points win_f0 .. win_f0 + win_nf - 1 (stride win_nf).
+        // full_tables (set before gen_grid): one window over the whole grid, kept after E2_calc (the analytic gradient and the self-tests read the
+        // tables); otherwise the windows are built, contracted and dropped one after the other, NOPT_XMC_WINDOW_MB bounding their memory.
+        int full_tables = 1;
+        int win_f0 = 0, win_nf = 0;
+        // strings ordered so that the start of the interpolation stencil grows along them for every other string and state (E_act = Ea + Eb)
+        std::vector<int> order_b, order_a;
+        // replacement lists for the alpha-beta three-body terms: alpha doubles / beta singles (AAB) and beta doubles / alpha singles (ABB)
+        rf_rep_list dbl_a, sgl_b, dbl_b, sgl_a;
+        int build_rep_lists();
+        // the windowed part of E2_calc: AV, CA and the three-body contraction for every window
+        int E2_windows(double ** E2_th, bool av, bool ca);
+        // grid points per window for the memory bound NOPT_XMC_WINDOW_MB (default 4096 MB for the five window-sized arrays)
+        int window_points() const;
+        // NOPT_XMC_BLOCKS (test switch): is this PT class used
+        static bool block_used(const char * b);
+        // the three-body tables at the grid points f0 .. f0 + nw - 1 into JK, AB (n_a^6 x nw each), as E2_calc builds them; the contributions of AV and CA
+        // to the four-index tables, which E2_calc already added, go to scratch copies (the analytic gradient rebuilds the windows it needs)
+        int build_P3_window(int f0, int nw, double * JK, double * AB);
         
         
         //functions
