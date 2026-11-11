@@ -13,6 +13,7 @@
 # include "timer.h"
 # include "defaults.h"
 # include "mp2.h"
+# include "grabbers.h"
 
 # include <vector>
 # include <cmath>
@@ -233,6 +234,11 @@ int MP2(molecule * M, mp2_par * mp2, char * job_name)
     fprintf(out_stream,"E(MP2) correlation                = % .10f\n",E_corr);
     fprintf(out_stream,"E(MP2) total                      = % .10f\n",E_RHF+E_corr);
     fprintf(out_stream,"\n");
+
+    if(grab_E==1){
+        E_grabbed.resize(1);
+        E_grabbed[0]=E_RHF+E_corr;
+    }
 
     if(mp2->nat_orb)
         mp2_nat_orb(M, R, eps, n_c, n_v, n_f, n_occ, n_ao, E_corr, job_name);

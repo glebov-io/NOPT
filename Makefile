@@ -12,7 +12,11 @@ progs_cpp:=$(filter %.cpp,$(shell ls src/progs))
 
 progs:= $(patsubst %.cpp, run_%, $(progs_cpp))
 
-.PHONY: all clean clean_gcov print
+tests_cpp:=$(filter %.cpp,$(shell ls src/tests))
+
+tests:= $(patsubst %.cpp, test_%, $(tests_cpp))
+
+.PHONY: all clean clean_gcov print tests
 .PRECIOUS: %.o
 
 ifeq ($(BLAS_LIB), mkl)
@@ -79,6 +83,15 @@ ifeq ($(USE_BLOCK2),yes)
 # BLA_VENDOR=Apple exports _F77UNDERSCORE alone.
 ifeq ($(BLAS_DEF),-D_MKL)
 BLOCK2_BLAS_DEF:=-D_HAS_INTEL_MKL=2
+# NOPT links MKL's Intel threading layer (mkl_intel_thread + iomp5); a shared libblock2 must too.
+B2_SO:=$(BLOCK2_DIR)/lib/libblock2.so
+ifneq ($(wildcard $(B2_SO)),)
+ifneq ($(filter-out clean clean_gcov print,$(or $(MAKECMDGOALS),all)),)
+ifeq ($(shell readelf -d $(B2_SO) | grep -c 'NEEDED.*\[libmkl_intel_thread\.so'),0)
+$(error $(B2_SO) does not need libmkl_intel_thread; rebuild block2 with -DOMP_LIB=INTEL)
+endif
+endif
+endif
 else ifeq ($(BLAS_DEF),-D_OPENBLAS -D_ACCELERATE)
 BLOCK2_BLAS_DEF:=-D_F77UNDERSCORE
 else
@@ -87,7 +100,7 @@ endif
 BLOCK2_DEF:=-D_EXPLICIT_TEMPLATE -D_LARGE_BOND -D_USE_CORE -D_USE_DMRG -D_USE_BIG_SITE -D_USE_SP_DMRG -D_USE_IC -D_USE_SU2SZ $(BLOCK2_BLAS_DEF) -D_USE_GLOBAL_VARIABLE -DNOPT_BLAS_CBLAS_ONLY
 BLOCK2_INC:=-I$(BLOCK2_DIR)/include
 BLOCK2_LIB:=-L$(BLOCK2_DIR)/lib -Wl,-rpath,$(BLOCK2_DIR)/lib -lblock2
-BLOCK2_OBJ:=src/block2_dmrg.o src/dmrg_wrap.o src/block2_mps_to_det.o src/mps_rotation.o src/block2_import_dressed.o src/block2_npdm.o src/dmrg_gaopt.o
+BLOCK2_OBJ:=src/block2_dmrg.o src/dmrg_wrap.o src/block2_mps_to_det.o src/mps_rotation.o src/block2_import_dressed.o src/block2_npdm.o src/dmrg_gaopt.o src/block2_named_ops.o
 NOPT_BLOCK2_DEF:=-DNOPT_HAS_BLOCK2
 endif
 
@@ -109,8 +122,10 @@ LIB_DIRS:=$(BLAS_LDIR) -L$(LIBINT_L_DIR) $(GRPP_LDIR) $(EXTRA_LDFLAGS)
 
 all:$(progs)
 
+test:$(tests)
+
 # auto-generated header dependencies (from -MMD -MP); empty on a fresh tree
--include $(wildcard src/*.d src/progs/*.d)
+-include $(wildcard src/*.d src/progs/*.d src/tests/*.d)
 
 # commit the build is made from, -dirty when tracked files differ from it. The header is rewritten
 # only when the stamp changes, so a new commit recompiles the programs' entry points and relinks.
@@ -123,15 +138,22 @@ include/git_stamp.h:FORCE
 FORCE:
 
 $(patsubst %.cpp,src/progs/%.o,$(progs_cpp)):include/git_stamp.h
+$(patsubst %.cpp,src/tests/%.o,$(tests_cpp)):include/git_stamp.h
 
 print:
 	@echo $(progs_cpp)
 	@echo $(progs)
 
-run_%:src/progs/%.o src/molecule.o src/molecule2.o src/chem_data.o src/MO2.o src/matr.o src/timer.o src/etc.o src/doCI_matr.o src/libint_link.o src/integral_derivatives.o src/ri_gradient.o src/gradient_rhf.o src/gradient_casscf.o src/casscf_resp.o src/gradient_driver.o src/pt_chain.o src/pt_canon.o src/tensor_tape.o src/SCF.o src/converger_2_1.o src/l-bfgs_2_1.o src/libint_functions.o src/ecp.o src/mol_link.o src/CI.o src/inp_out.o src/keywords.o src/doCI_data.o src/inp_par_read.o src/from_hash.o src/XMCQDPT.o src/res_fit.o src/binary_files.o src/xmc_read.o src/aldet.o src/RI.o src/nopa_pt.o src/CAS.o src/davidson.o src/basis_lib_read.o src/common_vars.o src/CDAS_PT.o src/CDAS_PT_rel.o src/U_CDAS_PT.o src/PT_tensors_IPEA.o src/PT_tensors_EE.o src/PT_tensors_EE_rel.o src/UPT_tensors_EE.o src/geom.o src/symmetry.o src/gv_solver.o src/trcamm.o src/z_matrix.o src/QM_calc.o src/pseudo_potential.o src/complex_diag.o src/CIS.o src/MP2.o src/aldet_rel.o src/jacobi.o src/grabbers.o src/casci_solver.o src/aldet_casci_wrap.o src/aldet_npdm.o src/localizer.o src/localized_dmrg.o src/tensor_rotate.o src/dsrg_pt.o src/dsrg_sf_tensors.o src/dsrg_sf_batch.o src/sad_guess.o src/dmrg_log.o src/avas.o src/superci_pt.o src/orbital_lbfgs.o $(BLOCK2_OBJ)
+run_%:src/progs/%.o src/molecule.o src/molecule2.o src/chem_data.o src/MO2.o src/matr.o src/timer.o src/etc.o src/doCI_matr.o src/libint_link.o src/integral_derivatives.o src/ri_gradient.o src/gradient_rhf.o src/gradient_casscf.o src/casscf_resp.o src/gradient_driver.o src/pt_chain.o src/pt_canon.o src/tensor_tape.o src/SCF.o src/converger_2_1.o src/l-bfgs_2_1.o src/libint_functions.o src/ecp.o src/mol_link.o src/CI.o src/inp_out.o src/keywords.o src/doCI_data.o src/inp_par_read.o src/from_hash.o src/XMCQDPT.o src/res_fit.o src/binary_files.o src/xmc_read.o src/aldet.o src/RI.o src/nopa_pt.o src/CAS.o src/davidson.o src/basis_lib_read.o src/common_vars.o src/CDAS_PT.o src/CDAS_PT_rel.o src/U_CDAS_PT.o src/PT_tensors_IPEA.o src/PT_tensors_EE.o src/PT_tensors_EE_rel.o src/UPT_tensors_EE.o src/geom.o src/symmetry.o src/gv_solver.o src/trcamm.o src/z_matrix.o src/QM_calc.o src/pseudo_potential.o src/complex_diag.o src/CIS.o src/MP2.o src/aldet_rel.o src/jacobi.o src/grabbers.o src/casci_solver.o src/aldet_casci_wrap.o src/aldet_npdm.o src/localizer.o src/localized_dmrg.o src/tensor_rotate.o src/dsrg_pt.o src/dsrg_sf_tensors.o src/dsrg_sf_batch.o src/sad_guess.o src/dmrg_log.o src/avas.o src/superci_pt.o src/orbital_lbfgs.o src/cdas_fold.o src/cdas_gno.o src/ipea_matrices.o $(BLOCK2_OBJ)
 
 	$(CXX) $^ $(OPT_LEVEL) $(OMP_FLAGS) $(LIB_DIRS) $(LIBS)  -o $@
 
+test_%:src/tests/%.o src/molecule.o src/molecule2.o src/chem_data.o src/MO2.o src/matr.o src/timer.o src/etc.o src/doCI_matr.o src/libint_link.o src/integral_derivatives.o src/ri_gradient.o src/pt_chain.o src/pt_canon.o src/tensor_tape.o src/SCF.o src/converger_2_1.o src/l-bfgs_2_1.o src/libint_functions.o src/ecp.o src/mol_link.o src/CI.o src/inp_out.o src/keywords.o src/doCI_data.o src/inp_par_read.o src/from_hash.o src/XMCQDPT.o src/res_fit.o src/binary_files.o src/xmc_read.o src/aldet.o src/RI.o src/nopa_pt.o src/CAS.o src/davidson.o src/basis_lib_read.o src/common_vars.o src/CDAS_PT.o src/CDAS_PT_rel.o src/U_CDAS_PT.o src/PT_tensors_IPEA.o src/PT_tensors_EE.o src/PT_tensors_EE_rel.o src/UPT_tensors_EE.o src/geom.o src/symmetry.o src/gv_solver.o src/trcamm.o src/z_matrix.o src/QM_calc.o src/pseudo_potential.o src/complex_diag.o src/CIS.o src/MP2.o src/aldet_rel.o src/jacobi.o src/grabbers.o src/casci_solver.o src/aldet_casci_wrap.o src/aldet_npdm.o src/localizer.o src/localized_dmrg.o src/tensor_rotate.o src/dsrg_pt.o src/dsrg_sf_tensors.o src/dsrg_sf_batch.o src/sad_guess.o src/dmrg_log.o src/avas.o src/superci_pt.o src/orbital_lbfgs.o src/cdas_fold.o src/cdas_gno.o src/ipea_matrices.o $(BLOCK2_OBJ)
+
+	$(CXX) $^ $(OPT_LEVEL) $(OMP_FLAGS) $(LIB_DIRS) $(LIBS)  -o $@
+
+	
+	
 # block2 TUs: the ones that include block2 headers — need the block2 ABI macros + include
 # path on top of the usual flags (see USE_BLOCK2 block above).
 src/block2_dmrg.o:src/block2_dmrg.cpp
@@ -155,6 +177,9 @@ src/block2_npdm.o:src/block2_npdm.cpp
 src/dmrg_gaopt.o:src/dmrg_gaopt.cpp
 	$(CXX) -o $@ -c $< $(OPT_LEVEL) $(OMP_FLAGS) -MMD -MP $(DEFINITIONS) $(INCLUDE_DIRS) $(BLOCK2_DEF) $(BLOCK2_INC) $(MAX_ERRORS)
 
+src/block2_named_ops.o:src/block2_named_ops.cpp
+	$(CXX) -o $@ -c $< $(OPT_LEVEL) $(OMP_FLAGS) -MMD -MP $(DEFINITIONS) $(INCLUDE_DIRS) $(BLOCK2_DEF) $(BLOCK2_INC) $(MAX_ERRORS)
+
 %.o:%.cpp
 	$(CXX) -o $@ -c $< $(OPT_LEVEL) $(OMP_FLAGS) -MMD -MP $(DEFINITIONS) $(INCLUDE_DIRS) $(MAX_ERRORS)
 
@@ -163,6 +188,6 @@ src/dmrg_gaopt.o:src/dmrg_gaopt.cpp
 	$(CC) -o $@ -c $< $(filter-out -std=%,$(OPT_LEVEL)) $(OMP_FLAGS) -MMD -MP $(DEFINITIONS) $(INCLUDE_DIRS) $(MAX_ERRORS)
 
 clean:
-	rm -f $(progs) src/*.o src/progs/*.o src/*.d src/progs/*.d include/git_stamp.h
+	rm -f $(progs) src/*.o src/progs/*.o src/tests/*.o src/*.d src/progs/*.d src/tests/*.d include/git_stamp.h
 clean_gcov:
-	rm src/*.gcda src/progs/*.gcda src/*.gcno src/progs/*.gcno
+	rm src/*.gcda src/progs/*.gcda src/tests/*.gcda src/*.gcno src/progs/*.gcno src/tests/*.gcno

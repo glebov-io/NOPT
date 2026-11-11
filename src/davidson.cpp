@@ -6,6 +6,7 @@
 # include "timer.h"
 # include "common_vars.h"
 # include "etc.h"
+# include <memory>
 
 
 
@@ -25,6 +26,7 @@ davidson_solver::davidson_solver(){
     r     = NULL;
     Hx    = NULL;
     V_m   = NULL;
+    // spin_proj = 0;
     
 }
 
@@ -40,6 +42,7 @@ int davidson_solver::set_par(aldet_data * ext_C, dav_par dav){
     se_min    = dav.se_min;
     edshift   = dav.edshift;
     sparsed_Hc = dav.sparsed_Hc;
+    // spin_proj  = dav.spin_proj;
     
     max_dim   = max_n_vec+n_bf+200;
     
@@ -316,6 +319,7 @@ int davidson_solver::run(int print, int read_states){
         for(int i=0;i<V.Nd;i++)
         for(int j=0;j<n_s;j++)
             V.coef[0][i*max_n_vec+j]=C->coef[0][i*n_s+j];
+        V.spin_project(V.coef[0], n_s, max_n_vec);
         
         dim+=n_s;
         V.transpose_ci(0);
@@ -460,6 +464,7 @@ int davidson_solver::run(int print, int read_states){
         
         
         
+        int new0 = dim-n; // first new expansion vector
         if(dim+n_s-conv_num<max_dim+1){
             for(int i=0;i<V.Nd;i++)
                 for(int j=0, d=dim-n;j<n_s;j++)
@@ -482,8 +487,17 @@ int davidson_solver::run(int print, int read_states){
                     }
             n0=0;
             dim=2*n_s-conv_num+n;
+            new0=n_s;
         }
 //         printf_timer("new V");
+        V.spin_project(V.coef[0] + new0, dim-n-new0, max_n_vec);
+        for(int j=new0;j<dim-n;j++){
+            double nn=0;
+            for(int i=0;i<V.Nd;i++) nn+=V.coef[0][i*max_n_vec+j]*V.coef[0][i*max_n_vec+j];
+            nn = nn > 1e-16 ? 1.0/sqrt(nn) : 0.0; // a residual of the other spins only: drop it (S05 skips it)
+            for(int i=0;i<V.Nd;i++) V.coef[0][i*max_n_vec+j]*=nn;
+        }
+        
         V.transpose_ci(0);
         if(print){
             if(V.Na==V.Nb)if(V.mult!=0){
@@ -535,6 +549,8 @@ int davidson_solver::run(int print, int read_states){
     delete[] S_bf ;
     
     //import roots to the external storage
+    
+    // V.spin_project(x, n_s, n_s);
     for(int i=0;i<V.Nd;i++)
         for(int j=0;j<n_s;j++)
             C->coef[0][i*n_s+j]=x[i*n_s+j];

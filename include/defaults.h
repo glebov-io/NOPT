@@ -80,3 +80,5 @@
 #define DSRG_RELAX_DEFAULT DSRG_RELAX_NONE // reference relaxation level (none = unrelaxed)
 
 #define AVAS_REF_BASIS_DEFAULT "cc-pvtz-minao"   // $AVAS reference minimal basis (H-Kr)
+#define AVAS_NCORE_DEFAULT 0                     // $AVAS leading occupied orbitals left out of the projection
+#define AVAS_CANONICALIZE_DEFAULT 0              // $AVAS Fock canonicalization within each block (0 = off)

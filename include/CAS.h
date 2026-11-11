@@ -21,6 +21,7 @@ class CAS_engine{
         int rotate_orbs;
         
         int * rep_num;
+        bool mask_by_irrep = true;   // calc_grad zeroes the rotations between differently labelled orbitals
         
         //number of states
         int n_s;
@@ -53,6 +54,10 @@ class CAS_engine{
         std::vector<double> U_loc_frozen;         // frozen localization (n_act^2)
         std::vector<double> C_loc_prev;           // previous frame's active orbitals, localized or
                                                   // canonical (n_ao x n_act)
+
+        // Exit code of the SCF loop, as the line printed after it reads: 0 not converged,
+        // 1 energy, 2 gradient, 3 step. -1 = no SCF run.
+        int scf_exit = -1;
 
         molecule * M;
         
