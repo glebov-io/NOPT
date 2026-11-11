@@ -1,0 +1,22 @@
+$PAR NUM_THREADS=4 N_MOL=1 RHF=1 CAS=0 D5=1 RI=1 NAME=c4h6 $PAREND
+$MOL
+ _CHARGE=0;
+ _BASIS=cc-pvtz;
+ _RI_BASIS=cc-pvtz-ri;
+ _UNITS= ang;
+ _xyz
+10
+trans-butadiene, distorted (screened shell sets: many far-apart pairs)
+C -1.838032  0.119616  0.010000
+C  1.848032 -0.119616 -0.005000
+C -0.606222 -0.412002  0.000000
+C  0.606222  0.402002  0.020000
+H -1.989584  1.191252 -0.030000
+H  1.989584 -1.181252  0.000000
+H -2.716654 -0.508244  0.010000
+H  2.726654  0.508244  0.000000
+H -0.476871 -1.478861  0.000000
+H  0.476871  1.488861 -0.010000
+$act_space n_alp=2 n_bet=2 n_val=4 mult=1 p_n=10; $end
+$END
+$RHF maxit=100 dE=1e-10 grad=1e-7 $END

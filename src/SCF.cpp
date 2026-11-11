@@ -1,4 +1,5 @@
 # include "blas_link.h"
+# include "energy_result.h"
 # include "matr.h"
 # include "inp_par_read.h"
 # include "timer.h"
@@ -211,6 +212,7 @@ int RHF(molecule * M, rhf_par * rhf, char * job_name){
     
     
     printf_timer("RHF converged at");
+    energy_result_record("rhf","",-1,E);
   
     delete[] BUF ;
     delete[] BUF2;
