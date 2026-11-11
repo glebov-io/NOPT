@@ -20,6 +20,8 @@ step resptest              unit run_resptest h2o_cas44.inp
 step rhf_gradient          "$HERE/rhf_gradient.sh"
 step casscf_gradient       "$HERE/casscf_gradient.sh"
 step casscf_root_gradient  "$HERE/casscf_root_gradient.sh"
+step dsrg_gradient         "$HERE/dsrg_gradient.sh"
+step dsrg_relax_gradient   "$HERE/dsrg_relax_gradient.sh"
 step opt_check             "$HERE/opt_check.sh"
 echo "step logs: $W"
 exit $rc

@@ -61,6 +61,7 @@ ordering:
 | `PROG=run_chaintest run.sh <dir> <any.inp>` | the chains of the PT inputs back to C, L, V, h (`pt_chain_B`, `pt_chain_H`) and the adjoint of the semicanonicalization (`pt_canon_vjp`, with and without the Fock-block seeds), against central finite differences of the forward definitions on random data, with the L/V adjoints in the auxiliary basis and in the eigenbasis of V; two negative controls |
 | `PROG=run_tapetest run.sh <dir> <any.inp>` | the reverse-mode tape: einsum (products, diagonals, scalar operands, accumulation, a threaded contraction), every DSRG regularizer with the orbital-energy adjoints and the Taylor branch of R, auxgemm, lin, constant leaves |
 | `PROG=run_resptest run.sh <dir> <cas.inp>` | SA-CASSCF response: CI kernel against the production CAS, zero residual, symmetry of the finite-difference Hessian, dense against iterative solve |
+| `NOPT_DSRG_TAPE_TEST=1` | DSRG-PT2 energy on the reverse-mode tape against the production ledger (also relax=once), tape adjoints against finite differences |
 
 `run_ritest`, `run_chaintest` and `run_tapetest` need no molecule and no derivative libint (the input file is ignored); each prints PASS or FAIL and
 returns 0 or 1.
@@ -75,6 +76,7 @@ energy record. The scripts below run it on the fixtures:
 |---|---|
 | `rhf_gradient.sh` | RHF, exact and RI; invariances, thread independence |
 | `casscf_gradient.sh`, `casscf_root_gradient.sh` | SA-CASSCF energy; individual roots, zero and unequal weights |
+| `dsrg_gradient.sh`, `dsrg_relax_gradient.sh` | DSRG-PT2, unrelaxed and relax=once: state-specific, a root of an SA reference (also of zero weight), the SA ensemble |
 | `opt_check.sh` | `run_opt` converges (RHF, SA-CASSCF energy, a CAS-SCF root) |
 | `regress_all.sh` | all of the above, the energy regression and the component checks, one PASS/FAIL line per step |
 
