@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "common_vars.h"          // out_stream
+#include "cdas_fold.h"            // assemble_g3 (the three-body recombination)
+#include "ipea_matrices.h"        // ipea_matrices (the IP/EA metric and Hamiltonian matrices)
 #include "tensor_rotate.h"        // rotate1/rotate2/rotate3 (active-space basis transforms)
 #include "matr.h"
 #include "timer.h"
@@ -86,18 +88,17 @@ static void require_solved(const dmrgci_engine &e, const char *what) {
 
 // Drop a previous bare-state snapshot and its scratch files.
 static void drop_snapshot(dmrgci_engine &e) {
-    for (const std::string &t : e.snap_tags)
-        remove_tag_files(t);
-    e.snap_tags.clear();
-    e.snap_mps.clear();
+    drop_state_set(e, "snap");
     e.snap_set = -1;
 }
+
+} // namespace
 
 // Move a one-site end-centered MPS to the other end so bra and ket share a center (the
 // MovingEnvironment constructor asserts they agree). Lossless gauge sweep at the MPS's own bond
 // dimension; the one-dot restriction of block2's DMRGDriver::align_mps_center.
-static void align_one_dot_center(dmrgci_engine &e, const std::shared_ptr<MPS<SU2, double>> &mps,
-                                 int target) {
+void nopt_block2::align_one_dot_center(dmrgci_engine &e,
+                                       const std::shared_ptr<MPS<SU2, double>> &mps, int target) {
     if (mps->center == target) return;
     if (mps->dot != 1 || (target != 0 && target != mps->n_sites - 1)) {
         fprintf(out_stream, "ERROR: the MPS overlap expects one-site end-centered states"
@@ -120,19 +121,11 @@ static void align_one_dot_center(dmrgci_engine &e, const std::shared_ptr<MPS<SU2
     mps->save_data();
 }
 
-} // namespace
-
-void block2_casci_wrap::import_dressed_operator(const double *h1_total, const double *h2_total,
-                                                const double *h3_total, double const_total) {
-    dmrgci_engine &e = *impl_;
+std::shared_ptr<MPO<SU2, double>>
+nopt_block2::build_general_mpo(dmrgci_engine &e, const double *h1_total, const double *h2_total,
+                               const double *h3_total, double const_total,
+                               const std::string &tag) {
     const int n = e.n_act;
-
-    // A Fiedler lattice must already be frozen by the bare import; without it the dressed tensors
-    // have no site->orbital map to land on.
-    if (e.cfg.loc_order == DMRG_LOCORDER_FIEDLER && e.reorder_perm.empty()) {
-        fprintf(out_stream, "ERROR: dressed import before bare import (no frozen Fiedler order)\n");
-        exit(EXIT_FAILURE);
-    }
 
     const size_t len1 = (size_t)n * n, len2 = len1 * len1, len3 = len2 * len1;
     const bool have_3body = !all_zero(h3_total, len3);
@@ -175,7 +168,7 @@ void block2_casci_wrap::import_dressed_operator(const double *h1_total, const do
     std::vector<typename SU2::pg_t> orbsym(n, 0); // C1
     auto hamil = std::make_shared<GeneralHamiltonian<SU2, double>>(vacuum, n, orbsym);
     auto gmpo = std::make_shared<GeneralMPO<SU2, double>>(
-        hamil, afd, MPOAlgorithmTypes::FastBipartite, 0.0, -1, 0);
+        hamil, afd, MPOAlgorithmTypes::FastBipartite, 0.0, -1, 0, tag);
     gmpo->build();
     std::shared_ptr<MPO<SU2, double>> mpo = std::make_shared<SimplifiedMPO<SU2, double>>(
         gmpo, std::make_shared<Rule<SU2, double>>(), false, false);
@@ -183,9 +176,15 @@ void block2_casci_wrap::import_dressed_operator(const double *h1_total, const do
     // IdentityAddedMPO copies const_e unchanged and injects only a coeff-1 identity operator, so it
     // adds no second constant in a sweep, while making the operator usable for expectations.
     mpo = std::make_shared<IdentityAddedMPO<SU2, double>>(mpo);
+    return mpo;
+}
 
-    e.mpo = mpo; // solve() runs the dressed MPO, warm off the retained MPS once a snapshot exists
-    e.dressed_mpo = true;
+// The dressed operator is the OP_DRESSED handle, selected on import: solve() runs it, warm off the
+// retained MPS once a snapshot exists.
+void block2_casci_wrap::import_dressed_operator(const double *h1_total, const double *h2_total,
+                                                const double *h3_total, double const_total) {
+    import_named_operator(OP_DRESSED, h1_total, h2_total, h3_total, const_total);
+    select_operator(OP_DRESSED);
 }
 
 // One persistent single-root MPS per root, extracted from the converged MultiMPS exactly as the RDM
@@ -193,20 +192,9 @@ void block2_casci_wrap::import_dressed_operator(const double *h1_total, const do
 // retained tag (warm) or drops it (cold), so this is the only copy of the bare states left.
 void block2_casci_wrap::snapshot_states(int i_set) {
     dmrgci_engine &e = *impl_;
-    require_solved(e, "snapshot_states");
-    host_threads_guard htg;
-
     drop_snapshot(e);
-    e.snap_mps.resize(e.n_s);
-    for (int st = 0; st < e.n_s; st++) {
-        const std::string xtag = e.mps_info->tag + "-bare" + std::to_string(st);
-        const std::string stag = xtag + "-s";
-        e.snap_mps[st] = extract_root_single(e, st, xtag, stag);
-        e.snap_tags.push_back(stag);
-        remove_tag_files(xtag); // the single-MPS copy under stag is self-contained
-    }
+    save_state_set("snap"); // the bare states are the named set calc_S answers for
     e.snap_set = i_set;
-    assert_stack_clean("bare state snapshot");
 }
 
 // One identity-MPO expectation per (dressed, bare) pair. Both sets live on the same frozen lattice
@@ -216,11 +204,14 @@ void block2_casci_wrap::snapshot_states(int i_set) {
 void block2_casci_wrap::calc_S(double *S_track, int a, int b) {
     dmrgci_engine &e = *impl_;
     require_solved(e, "calc_S");
-    if (a != 0 || e.snap_set < 0 || b != e.snap_set || (int)e.snap_mps.size() != e.n_s) {
+    const auto snap = e.named_sets.find("snap");
+    if (a != 0 || e.snap_set < 0 || b != e.snap_set || snap == e.named_sets.end() ||
+        (int)snap->second.mps.size() != e.n_s) {
         fprintf(out_stream, "ERROR: DMRG calc_S compares the current MPS set (a=0) against the"
                             " snapshot set %d (got a=%d b=%d)\n", e.snap_set, a, b);
         exit(EXIT_FAILURE);
     }
+    const std::vector<std::shared_ptr<MPS<SU2, double>>> &snap_mps = snap->second.mps;
     host_threads_guard htg;
     const int ns = e.n_s;
 
@@ -231,11 +222,11 @@ void block2_casci_wrap::calc_S(double *S_track, int a, int b) {
         const std::string xtag = e.mps_info->tag + "-ov" + std::to_string(d);
         const std::string stag = xtag + "-s";
         std::shared_ptr<MPS<SU2, double>> dmps = extract_root_single(e, d, xtag, stag);
-        align_one_dot_center(e, dmps, e.snap_mps[0]->center);
+        align_one_dot_center(e, dmps, snap_mps[0]->center);
 
         for (int q = 0; q < ns; q++) {
             auto ome = std::make_shared<MovingEnvironment<SU2, double, double>>(
-                impo, e.snap_mps[q], dmps, "OVLP");
+                impo, snap_mps[q], dmps, "OVLP");
             ome->init_environments(false);
             auto ex = std::make_shared<Expect<SU2, double, double>>(ome, (ubond_t)e.cfg.m,
                                                                     (ubond_t)e.cfg.m);
@@ -282,38 +273,8 @@ void block2_casci_wrap::PT2_import_data(double * ext_T3,
         g2[((a*n_act_+c)*n_act_+b)*n_act_+d]+=ext_T2_AB[((a*n_act_+b)*n_act_+c)*n_act_+d];
     }
     
-    // #pragma omp parallel for collapse(2) schedule(static)
     g3.resize(n_act_*n_act_*n_act_*n_act_*n_act_*n_act_);
-    for(int t=0;t<n_act_;t++) 
-    for(int u=0;u<n_act_;u++)
-    for(int v=0;v<n_act_;v++) 
-    for(int w=0;w<n_act_;w++)
-    for(int x=0;x<n_act_;x++) 
-    for(int y=0;y<n_act_;y++){
-       g3[((((t*n_act_+u)*n_act_+v)*n_act_+w)*n_act_+x)*n_act_+y] = 
-              ( 2.0*ext_T3_AB[((((t*n_act_+v)*n_act_+u)*n_act_+w)*n_act_+x)*n_act_+y] 
-              + 2.0*ext_T3_AB[((((t*n_act_+x)*n_act_+u)*n_act_+y)*n_act_+v)*n_act_+w]
-              + 2.0*ext_T3_AB[((((v*n_act_+t)*n_act_+w)*n_act_+u)*n_act_+x)*n_act_+y] 
-              + 2.0*ext_T3_AB[((((v*n_act_+x)*n_act_+w)*n_act_+y)*n_act_+t)*n_act_+u]
-              + 2.0*ext_T3_AB[((((x*n_act_+t)*n_act_+y)*n_act_+u)*n_act_+v)*n_act_+w] 
-              + 2.0*ext_T3_AB[((((x*n_act_+v)*n_act_+y)*n_act_+w)*n_act_+t)*n_act_+u]
-              -     ext_T3_AB[((((t*n_act_+v)*n_act_+u)*n_act_+w)*n_act_+x)*n_act_+y] 
-              +     ext_T3_AB[((((v*n_act_+t)*n_act_+u)*n_act_+w)*n_act_+x)*n_act_+y]
-              +     ext_T3_AB[((((x*n_act_+v)*n_act_+u)*n_act_+w)*n_act_+t)*n_act_+y] 
-              +     ext_T3_AB[((((t*n_act_+x)*n_act_+u)*n_act_+w)*n_act_+v)*n_act_+y]
-              -     ext_T3_AB[((((v*n_act_+x)*n_act_+u)*n_act_+w)*n_act_+t)*n_act_+y] 
-              -     ext_T3_AB[((((x*n_act_+t)*n_act_+u)*n_act_+w)*n_act_+v)*n_act_+y] ) / 12.0;
-    }
-    int n=n_act_;
-    auto ix = [n](int t,int u,int v,int w,int x,int y)->size_t {
-    return (((((size_t)t*n+u)*n+v)*n+w)*n+x)*n+y; };
-    #pragma omp parallel for collapse(2) schedule(static)
-        for(int t=0;t<n;t++) for(int u=0;u<n_act_;u++)
-        for(int v=0;v<n_act_;v++) for(int w=0;w<n_act_;w++)
-        for(int x=0;x<n_act_;x++) for(int y=0;y<n_act_;y++){
-            const size_t i = ix(t,u,v,w,x,y), id = ix(u,t,w,v,y,x);
-            if(i < id){ double s = 0.5*(g3[i]+g3[id]); g3[i] = g3[id] = s; }
-        }
+    assemble_g3(n_act_, ext_T3_AB, g3.data());
     
     
     
@@ -335,75 +296,23 @@ int block2_casci_wrap::calc_IPEA_single(double * U_IP, double * H_IP,
 
     int n_s = n_states();
     
-    //U_IP
     double * gamma = new double[n_s*n_act_*n_act_];
     set_zero_matr(gamma,n_act_*n_act_*n_s);
     calc_DM_diag(gamma,a);
-    for(int i=0;i<n_s*n_act_*n_act_;i++)gamma[i]=gamma[i]*0.5;
-    // memcpy(U_IP,gamma,sizeof(double)*n_act_*n_act_);
-    average_DM_aldet_diag(U_IP,gamma, avecoe,n_act_*n_act_,n_s);
-    
-    
-    //U_EA
-    for(int i=0;i<n_act_*n_act_;i++)U_EA[i]=-U_IP[i];
-    for(int i=0;i<n_act_;i++)U_EA[i*(n_act_+1)]=1.0+U_EA[i*(n_act_+1)];
+    //average_DM_aldet_diag scales the leading block of its input in place
+    double * gamma_av = new double[n_act_*n_act_];
+    average_DM_aldet_diag(gamma_av,gamma, avecoe,n_act_*n_act_,n_s);
     
     
     double * GAMMA = new double[n_s*n_act_*n_act_*n_act_*n_act_];
     set_zero_matr(GAMMA,n_s*n_act_*n_act_*n_act_*n_act_);
     G_calc(GAMMA);
     
-    //H_IP
-    set_zero_matr(H_IP,n_act_*n_act_);
-
-    for(int t=0;t<n_act_;t++)
-    for(int u=0;u<n_act_;u++)
-    for(int w=0;w<n_act_;w++)
-        H_IP[t*n_act_+u]+= U_IP[t*n_act_+w]*g1[u*n_act_+w];//restricted variant
-    
-    
-    for(int t=0;t<n_act_;t++)
-    for(int u=0;u<n_act_;u++)
-    for(int v=0;v<n_act_;v++)
-    for(int x=0;x<n_act_;x++)
-    for(int y=0;y<n_act_;y++)
-        H_IP[t*n_act_+u]+=GAMMA[((t*n_act_+y)*n_act_+v)*n_act_+x]*0.5*
-                      (g2[((u*n_act_+y)*n_act_+v)*n_act_+x]);//restricted variant
-    
-    
-    // fprintf(out_stream,"H:\n");
-    // PrintMatr(H_IP,n_act_,n_act_,0);
-    
-    //H_EA
-    set_zero_matr(H_EA,n_act_*n_act_);
-
-    for(int t=0;t<n_act_;t++)
-    for(int u=0;u<n_act_;u++)
-    for(int v=0;v<n_act_;v++)
-        H_EA[t*n_act_+u]+= U_EA[t*n_act_+v]*g1[u*n_act_+v];//restricted variant
-    
-    for(int t=0;t<n_act_;t++)
-    for(int u=0;u<n_act_;u++)
-    for(int v=0;v<n_act_;v++)
-    for(int x=0;x<n_act_;x++){
-        H_EA[t*n_act_+u]+=U_IP[x*n_act_+v]*(2*g2[((t*n_act_+u)*n_act_+v)*n_act_+x]-g2[((t*n_act_+x)*n_act_+v)*n_act_+u]);
-    }
-    
-    for(int t=0;t<n_act_;t++)
-    for(int u=0;u<n_act_;u++)
-    for(int v=0;v<n_act_;v++)
-    for(int w=0;w<n_act_;w++)
-    for(int x=0;x<n_act_;x++)
-        H_EA[t*n_act_+u]-=GAMMA[((v*n_act_+t)*n_act_+x)*n_act_+w]*0.5*
-                      (      g2[((v*n_act_+u)*n_act_+w)*n_act_+x]);//restricted variant
-    
-   
-    // fprintf(out_stream,"H_EA:\n");
-    // PrintMatr(H_EA,n_act_,n_act_,0);
-    // exit(0);
+    ipea_matrices(n_act_, g1.data(), g2.data(), gamma_av, GAMMA, U_IP, H_IP, U_EA, H_EA);
     
     printf_timer("calculation of IPEA matrices");
     delete[] GAMMA;
+    delete[] gamma_av;
     delete[] gamma;
     return 0;
 }

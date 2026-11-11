@@ -45,6 +45,7 @@ class aldet_data
         int na;
         int nb;
         int mult;
+        std::vector<double> remove_spin;
         int print_number;
         
         //calculated variables
@@ -58,6 +59,18 @@ class aldet_data
         int * bit_a;
         int * bit_b;
         int * buf;
+        
+        // for S- operator
+        ci_int NaM;
+        ci_int NbM;    
+        int * faM;
+        int * fbM;
+        int * vec_aM;
+        int * vec_bM;
+        double * coef_spin_proj;
+        double * coef_spin_projM;
+        
+        
         
         //bufer for energy
         double ** E_states;
@@ -301,7 +314,10 @@ class aldet_data
         
         int H_calc_PT2(double * H, int n_s);
         
-        
+        int SM_mult(double * out, const double * in, int k, int ld);
+        int SP_mult(double * out, const double * in, int k, int ld);
+        int S2_mult(double * out, const double * in, int k, int ld);
+        int spin_project(double * c, int ncol, int ld);
         int calc_spin_matr(double * O, double * C,int n_s, int ld);
         int calc_L2_matr  (double * O, int i_s   ,int n_s, int ld);
         int calc_P_matr  (double * O, int i_s   ,int n_s, int ld);

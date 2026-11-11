@@ -19,6 +19,10 @@ class aldet_data;  // opaque to consumers; only the aldet adapter dereferences i
 #include <limits>
 #include <vector>
 
+// Operator a handle-holding backend can solve on or take expectation values of: the active-space
+// Hamiltonian the integral import built, and the folded/dressed totals imported alongside it.
+enum casci_operator_kind { OP_BARE = 0, OP_FOLDED = 1, OP_DRESSED = 2 };
+
 class casci_solver {
 public:
     virtual ~casci_solver();
@@ -62,6 +66,10 @@ public:
     // A backend that can't rotate its own CI vector uses it to report its leading configurations in
     // the canonical basis. aldet and rotation-capable backends ignore it (they already canonicalize).
     virtual void set_report_rotation(const double* U) {}
+    // The canonicalization above, copied back into U as U[p*n_act+i] (p canonical, i solve): the
+    // active-basis rotation the backend's RDMs still owe a consumer reading them outside the solve
+    // basis. false means nothing is stored and U is left untouched.
+    virtual bool report_rotation(std::vector<double>& U) const { return false; }
     // State-average weights (n_s entries, positive; the backend normalizes by their sum) the
     // optimizer consumes the RDMs with. Only a backend that averages internally needs them; one that
     // hands back per-state RDMs ignores it.
@@ -129,6 +137,17 @@ public:
     // no longer exists. A uniformly cold backend -- aldet re-solves every iteration -- is false.
     virtual bool last_solve_cold() const { return false; }
 
+    // Records of the last branch solve, all loud out-of-line defaults: the discarded weight of its
+    // entry sweep and of its one-site tail (worst over the tail), the tail sweeps it ran, and
+    // whether the max-over-roots |dE| met the stop tolerance.
+    virtual double last_entry_dw() const;
+    virtual double last_tail_dw() const;
+    virtual int last_tail_sweeps() const;
+    virtual bool last_solve_converged() const;
+    // Largest bond dimension the stored state of the last branch actually carries, read from its
+    // own tensors: a requested bond dimension is not a measurement of the compression reached.
+    virtual int last_max_bond_dim() const;
+
     // --- relating the wavefunction across an active-orbital-basis change (capability-gated) ---
     // All three operations need the same thing: representing/comparing the wavefunction
     // when the active orbitals are rotated. A determinant CI has explicit, index-comparable
@@ -158,6 +177,35 @@ public:
     virtual bool supports_dressed_import() const { return false; }
     virtual void import_dressed_operator(const double* h1_total, const double* h2_total,
                                          const double* h3_total, double const_total);
+
+    // A backend that holds several named folded/dressed operator handles at once and can select
+    // one of them for its solves and expectation values advertises true.
+    virtual bool supports_operator_handles() const { return false; }
+    // Build (or replace) the handle of kind, a TOTAL operator in the same convention and basis
+    // import_dressed_operator takes; h3 may be null. Building never changes the selection.
+    virtual void import_named_operator(int kind, const double* h1, const double* h2,
+                                       const double* h3, double c);
+    // Operator the following solves and expectation values run on. The default aborts loudly.
+    virtual void select_operator(int kind);
+    // Continue the retained state set on operator kind at bond dimension m: n_sweeps noise-free
+    // variational sweeps at Davidson threshold dav_tol, optionally closed by the backend's one-site
+    // tail; a tailed branch pads to an even count (n_sweeps+1 at most) and closes where it entered.
+    // The operator selection is restored on return. Returns the variational sweeps executed.
+    virtual int solve_branch(int kind, int m, int n_sweeps, double dav_tol, bool one_site_tail);
+    // Store the retained state set under a name and restore it later; a checkpoint survives any
+    // number of solves and is never consumed by loading it.
+    virtual void save_checkpoint(const char* name);
+    virtual void load_checkpoint(const char* name);
+    // Persist the current state set (one state per root) under a name, as snapshot_states does for
+    // the dressed re-solve, but named and coexisting with other sets.
+    virtual void save_state_set(const char* name);
+    // S[i*n_s+j] = <state i of set a | state j of set b>: bra rows from a, ket columns from b. A
+    // cross-set matrix is not symmetric.
+    virtual void overlap_sets(const char* a, const char* b, double* S);
+    // E[i] = <state i of set name| operator kind |state i of set name> (n_s entries).
+    virtual void expect_set(const char* name, int kind, double* E);
+    // Drop every named set and checkpoint, files included; the set snapshot_states owns stays.
+    virtual void release_named_states();
 
     // --- transition-density read-outs (capability-gated) ---
 #if 0  // full transition 2-RDM: no consumer, the driver reads G2_calc_diag. Revive for first-order

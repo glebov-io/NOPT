@@ -22,15 +22,18 @@ block2_casci_wrap::block2_casci_wrap(int n_act, int na, int nb, int mult, int n_
     ensure_block2_runtime(cfg.save_dir, cfg.memory, cfg.main_stack, nthr);
 }
 
-// The engine owns its MPS tag namespace, so its final scratch set and the bare-state snapshot leave
-// with it: every other tag (per-root extracts, the read-out copies) is removed where it is made.
-// Best-effort and silent -- a destructor must not propagate, and the runtime clears the scratch dir.
+// The engine owns its MPS tag namespace, so its final scratch set, its named state sets and its
+// checkpoints leave with it: every other tag (per-root extracts, the read-out copies) is removed
+// where it is made. Best-effort and silent -- a destructor must not propagate.
 block2_casci_wrap::~block2_casci_wrap() {
     if (impl_ == nullptr)
         return;
     try {
-        for (const std::string &t : impl_->snap_tags)
-            remove_tag_files(t);
+        for (const auto &s : impl_->named_sets)
+            for (const std::string &t : s.second.tags)
+                remove_tag_files(t);
+        for (const auto &c : impl_->named_ckpt)
+            remove_tag_files(c.second);
         if (impl_->mps_info != nullptr)
             remove_tag_files(impl_->mps_info->tag);
     } catch (...) {
@@ -68,6 +71,13 @@ void block2_casci_wrap::set_report_rotation(const double *U) {
     e.U_canon.assign(U, U + (size_t)e.n_act * e.n_act);
     e.have_canon = true;
 }
+bool block2_casci_wrap::report_rotation(std::vector<double> &U) const {
+    // Hand back the retained canonicalization; nothing retained leaves U untouched.
+    const dmrgci_engine &e = *impl_;
+    if (!e.have_canon) return false;
+    U = e.U_canon;
+    return true;
+}
 void block2_casci_wrap::set_state_weights(const double *w, int n_s) {
     // The weights the state-averaged 2-RDM is accumulated with; none => equal weights.
     dmrgci_engine &e = *impl_;
@@ -91,4 +101,8 @@ double block2_casci_wrap::last_solve_trunc_de() const { return impl_->last_trunc
 double block2_casci_wrap::energy_resolution() const { return impl_->last_resolution; }
 double block2_casci_wrap::last_order_drift() const { return impl_->last_ord_drift; }
 bool block2_casci_wrap::last_solve_cold() const { return impl_->last_cold_fallback; }
+double block2_casci_wrap::last_entry_dw() const { return impl_->last_entry_dw; }
+double block2_casci_wrap::last_tail_dw() const { return impl_->last_tail_dw; }
+int block2_casci_wrap::last_tail_sweeps() const { return impl_->last_tail_sweeps; }
+bool block2_casci_wrap::last_solve_converged() const { return impl_->last_converged; }
 void block2_casci_wrap::gen_ext_ind() { /* aldet determinant index tables; n/a for an MPS backend */ }
