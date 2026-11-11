@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Geometry optimization with the analytic gradient (run_opt). Each case must converge (|dE| < 1e-7 and max|g| < 3e-5, or a step below 1e-4
-# with max|g| < 3e-5) with the energy going down overall. RHF/RI, the SA energy of a 3-state CAS(4,4) and root 0 of a 2-state CAS(4,4)
+# with max|g| < 3e-5) with the energy going down overall. RHF/RI, the SA energy of a 3-state CAS(4,4), root 0 of a 2-state CAS(4,4) and
+# XMCQDPT2 root 0 on a 2-state CAS(4,4)
 # (the CAS-based runs follow the CAS-SCF solution from geometry to geometry). Not root 1 of water: its S1 is dissociative (one OH goes to
 # 3.5-4 A on a nearly flat H + OH surface), which tests the surface rather than the optimizer.
 set -uo pipefail
@@ -23,4 +24,5 @@ run(){  # <label> <fixture> [run_opt options]
 run rhf_ri       "$HERE/fixtures/rhf/h2o_rhf_ri.inp"
 run cas_sa3      "$HERE/fixtures/cas/h2o_cas44.inp"
 run cas_s2_root0 "$HERE/fixtures/cas/h2o_cas44_s2.inp" -root 0
+run xmc_s2       "$HERE/fixtures/xmc/h2o_xmc_s2.inp"
 exit $rc
