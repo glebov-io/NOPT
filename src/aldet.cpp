@@ -17,6 +17,9 @@
 
 #define NUM_AVX 1
 
+#define KC 4
+
+
 #define TEST_ALDET
 
 int sparsed_CI_vec::decompress(double * C, int a, int n_s){
@@ -124,6 +127,15 @@ aldet_data::aldet_data(){
     bit_b = NULL;
     buf = NULL;//more space for +a-b and -a+b ????
     
+    NaM = 0;
+    NbM = 0;    
+    faM             = NULL;
+    fbM             = NULL;
+    vec_aM          = NULL;
+    vec_bM          = NULL;
+    coef_spin_proj  = NULL;
+    coef_spin_projM = NULL;
+        
     
     n_states = NULL;
     coef     = NULL;
@@ -232,6 +244,13 @@ int aldet_data::get_dim_meta(int ext_n_act, int ext_na, int ext_nb, int ext_n_se
     Nb = (int) std::lround(tgammal(n_act+1) / tgammal(nb+1) / tgammal(n_act-nb+1));    
     Nd = (long)Na*Nb;
     
+    NaM = 1;
+    NbM = 1;
+    if(na!=0    ) NaM = (int) std::lround(tgammal(n_act+1) / tgammal(na  ) / tgammal(n_act-na+2));
+    if(nb!=n_act) NbM = (int) std::lround(tgammal(n_act+1) / tgammal(nb+2) / tgammal(n_act-nb  ));    
+    
+    coef_spin_proj = new double[KC*Nd];
+    coef_spin_projM= new double[1LL*KC*NaM*NbM];
     
     if(print_number>Nd)
         print_number=Nd;
@@ -251,6 +270,12 @@ int aldet_data::get_dim_meta(int ext_n_act, int ext_na, int ext_nb, int ext_n_se
     if(mult!=0){
         sym_ab=1;
         for(int i=mult;i>1;i-=2)sym_ab=-sym_ab;
+        const int two_ms = abs(na - nb), two_smax = min(na + nb, 2 * n_act - na - nb);
+        for(int ts = two_ms; ts <= two_smax; ts += 2){
+            if(ts == mult - 1) continue;
+            // if(parity && ((ts - mult + 1) / 2) % 2) continue;
+            remove_spin.push_back(ts / 2.0 * (ts / 2.0 + 1));
+        }
     }
     
 #ifdef TEST_ALDET
@@ -297,7 +322,6 @@ int aldet_data::get_dim(int ext_n_act, int ext_na, int ext_nb, int ext_n_sets, i
     vec_b = new int [Nb*(nb+1)];
     get_factorials(na, n_act, fa);
     get_factorials(nb, n_act, fb);
-    
     get_vec(na, n_act, Na, vec_a);
     get_vec(nb, n_act, Nb, vec_b);
     
@@ -305,6 +329,17 @@ int aldet_data::get_dim(int ext_n_act, int ext_na, int ext_nb, int ext_n_sets, i
     bit_b = new int [n_act];
     buf = new int [max(na+1,nb+1) + 1];//more space for +a-b and -a+b ????
     buf[0]=0;
+    
+    faM = new int [(na-1) * n_act];
+    fbM = new int [(nb+1) * n_act];
+    vec_aM = new int [NaM*(na+0)];
+    vec_bM = new int [NbM*(nb+2)];
+    
+    get_factorials(na-1, n_act, faM);
+    get_factorials(nb+1, n_act, fbM);
+    get_vec(na-1, n_act, NaM, vec_aM);
+    get_vec(nb+1, n_act, NbM, vec_bM);
+
     
     const int Na_zv = (int) std::lround(tgammal(n_act) / tgammal(na) / tgammal(n_act-na+1));
     const int Nb_zv = (int) std::lround(tgammal(n_act) / tgammal(nb) / tgammal(n_act-nb+1));
@@ -3668,34 +3703,26 @@ int aldet_data::H_calc_PT2(double * H, int n_s){
     
     return 0;
 }
+
+inline void spin_parity_project(double * c, int N, int ncol, int ld, double sym_ab){
+    for(int a = 0; a < N; a++){
+        for(int k = 0; k < ncol; k++){
+            double & d = c[((size_t)a * N + a) * ld + k];
+            if(sym_ab < 0) d = 0.0;
+        }
+        for(int b = a + 1; b < N; b++)
+            for(int k = 0; k < ncol; k++){
+                double & u = c[((size_t)a * N + b) * ld + k];
+                double & l = c[((size_t)b * N + a) * ld + k];
+                const double v = 0.5 * (u + sym_ab * l);
+                u = v; l = sym_ab * v;
+            }
+    }
+}
         
+int aldet_data::SM_mult(double * O,const double * C,int n_s, int ld){
 
-
-int aldet_data::calc_spin_matr(double * O, double * C,int n_s, int ld){
-    
-    
-    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,
-                         n_s,n_s,Nd,1.0,
-                         C,ld,
-                         C,ld,0.0,
-                         O      ,n_s);
-    
-    double Sz =(na-nb)/2.0;
-    for(int i=0;i<n_s*n_s;i++)O[i]=O[i]*(Sz*Sz-Sz);
-    
-    if(na==0    )return 0;
-    if(nb==n_act)return 0;
-    
-    int NaM = (int) std::lround(tgammal(n_act+1) / tgammal(na  ) / tgammal(n_act-na+2));
-    int NbM = (int) std::lround(tgammal(n_act+1) / tgammal(nb+2) / tgammal(n_act-nb  ));    
-    
-    int * faM = new int [(na-1) * n_act];
-    int * fbM = new int [(nb+1) * n_act];
-    get_factorials(na-1, n_act, faM);
-    get_factorials(nb+1, n_act, fbM);
-    
-    double * S_M_c = new double[NaM*NbM*n_s];
-    set_zero_matr(S_M_c, NaM*NbM*n_s);
+    set_zero_matr(O, NaM*NbM*n_s);
     
     
     for(int i_CI = 0; i_CI<Na; i_CI++)
@@ -3712,7 +3739,7 @@ int aldet_data::calc_spin_matr(double * O, double * C,int n_s, int ld){
             auto i_CIext = get_ind_from_ON(bit_a, n_act, na-1, faM, buf);
             auto j_CIext = get_ind_from_ON(bit_b, n_act, nb+1, fbM, buf);
             for(int i_s=0;i_s<n_s;i_s++)
-                S_M_c[(i_CIext*NbM+j_CIext)*n_s+i_s]+= C[(i_CI*Nb+j_CI)*ld+i_s]*
+                O[(i_CIext*NbM+j_CIext)*n_s+i_s]+= C[(i_CI*Nb+j_CI)*ld+i_s]*
                                                        a_spin_sign[i_CI*n_act+t]*
                                                        b_spin_sign[j_CI*n_act+t];
             
@@ -3722,6 +3749,115 @@ int aldet_data::calc_spin_matr(double * O, double * C,int n_s, int ld){
         }
             
     }
+    
+    return 0;
+}
+
+int aldet_data::SP_mult(double * O, const double * C,int n_s, int ld){
+
+    set_zero_matr(O, Nd*n_s);
+    
+    
+    for(int i_CI = 0; i_CI<NaM; i_CI++)
+    for(int j_CI = 0; j_CI<NbM; j_CI++){
+        
+        memset(bit_a,0,n_act*sizeof(int));
+        memset(bit_b,0,n_act*sizeof(int));
+        for (int k=1; k<na+0; k++) bit_a[vec_aM[i_CI*(na+0)+k]-1] = 1;
+        for (int k=1; k<nb+2; k++) bit_b[vec_bM[j_CI*(nb+2)+k]-1] = 1;
+        
+        for(int t=0  ;t<n_act;t++)if(bit_a[t]==0)if(bit_b[t]!=0){
+            bit_a[t]=1;
+            bit_b[t]=0;
+            auto i_CIext = get_ind_from_ON(bit_a, n_act, na, fa, buf);
+            auto j_CIext = get_ind_from_ON(bit_b, n_act, nb, fb, buf);
+            for(int i_s=0;i_s<n_s;i_s++)
+                O[(i_CIext*Nb+j_CIext)*n_s+i_s]+= C[(i_CI*NbM+j_CI)*ld+i_s]*
+                                                       a_spin_sign[i_CIext*n_act+t]*
+                                                       b_spin_sign[j_CIext*n_act+t];
+            
+            bit_a[t]=0;
+            bit_b[t]=1;
+            
+        }
+            
+    }
+    
+    return 0;
+}
+
+
+
+// out = S^2 in for k columns; in has row stride ld, out is dense (row stride k)
+int aldet_data::S2_mult(double * out, const double * in, int k, int ld){
+    
+    if(na==0    )return 0;
+    if(nb==n_act)return 0;
+    
+    SM_mult(coef_spin_projM, in, k, ld);
+    SP_mult(out, coef_spin_projM, k, k);
+    
+    double Sz = (na-nb)/2.0;
+    double sz2 = (Sz*Sz-Sz);
+    
+    // const int n = n_act;
+    for(ci_int i = 0; i < Na; i++)
+    for(ci_int j = 0; j < Nb; j++)
+    for(int c = 0; c < k; c++)
+        out[(i * Nb + j) * k + c] += sz2 * in[(i * Nb + j) * ld + c];
+    
+    
+    return 0;
+    
+}
+        
+        
+int aldet_data::spin_project(double * c, int ncol, int ld){
+    
+    
+    if(remove_spin.empty()) return 0;
+    if(na == nb && Na == Nb) spin_parity_project(c, Na, ncol, ld, sym_ab);
+    
+    double S = (mult-1.0) / 2.0; 
+    double ss = S * (S + 1.0);
+    
+    
+    const ci_int Nd = Na * Nb;
+    for(int c0 = 0; c0 < ncol; c0 += KC){
+        const int k = min(KC, ncol - c0);
+        for(double sp : remove_spin){
+            S2_mult(coef_spin_proj, c + c0, k, ld);
+            const double f = 1.0 / (ss - sp);
+            for(ci_int d = 0; d < Nd; d++)
+                for(int q = 0; q < k; q++){
+                    double & v = c[d * ld + q + c0];
+                    v = (coef_spin_proj[d * k + q] - sp * v) * f;
+                }
+        }
+    }
+        
+    return 0;
+}
+
+
+int aldet_data::calc_spin_matr(double * O, double * C,int n_s, int ld){
+    
+    
+    cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,
+                         n_s,n_s,Nd,1.0,
+                         C,ld,
+                         C,ld,0.0,
+                         O      ,n_s);
+    
+    double Sz =(na-nb)/2.0;
+    for(int i=0;i<n_s*n_s;i++)O[i]=O[i]*(Sz*Sz-Sz);
+    
+    if(na==0    )return 0;
+    if(nb==n_act)return 0;
+        
+    double * S_M_c = new double[NaM*NbM*n_s];
+    
+    SM_mult(S_M_c, C, n_s, ld);
     
     cblas_dgemm(CblasRowMajor,CblasTrans,CblasNoTrans,
                          n_s,n_s,NaM*NbM,1.0,
@@ -3733,8 +3869,6 @@ int aldet_data::calc_spin_matr(double * O, double * C,int n_s, int ld){
 //     for(int i_s=0;i_s<n_s;i_s++)
 //         fprintf(out_stream,"%d - %e\n",i_s,O[i_s*(n_s+1)]);
 //     getchar();
-    delete[] faM   ;
-    delete[] fbM   ;
     delete[] S_M_c ;
     
     return 0;
@@ -4288,6 +4422,15 @@ aldet_data::~aldet_data(){
     if(bit_a != NULL)delete[] bit_a;
     if(bit_b != NULL)delete[] bit_b;
     if(buf   != NULL)delete[] buf;//more space for +a-b and -a+b ????
+    
+    if(faM             != NULL) delete[] faM            ;
+    if(fbM             != NULL) delete[] fbM            ;
+    if(vec_aM          != NULL) delete[] vec_aM         ;
+    if(vec_bM          != NULL) delete[] vec_bM         ;
+    if(coef_spin_proj  != NULL) delete[] coef_spin_proj ;
+    if(coef_spin_projM != NULL) delete[] coef_spin_projM;
+                                   
+    
     
     if(n_states != NULL)delete[] n_states;
 
