@@ -635,98 +635,27 @@ int res_fit_calc_3body_AAA(double * P, int n_s, int ld,
 //     y_b '
 //     
 //     t-u-v-w-x-y
-int res_fit_calc_3body_AB(double * P, int n_s, int ld,
-                          double * ci,
-                          int N,int na, int nb, int Na, int Nb, int * fa, int * fb, int * vec_a, int * vec_b,
-                          double * RF, int * L_fit, int * S_fit, double * C_fit, int N_fit,
-                          int i_th, int n_th){
-    
-    int * bit_a = new int [N];
-    int * bit_b = new int [N];
-    int * buf = new int [max(na,nb) + 1];//more space for +a-b and -a+b
-    buf[0]=0;
-    
-    double sign ;
-    double sign1;
-    double sign2;
-    double sign3;
-    double sign4;
-    double sign5;
-    double sign6;
-    
-    
-    double Rc;
-    
-    double * R;
-    int L;
-    int S;
-    double * C;
-    double * CI_0;
-    double * CI_e;
-
-    //fprintf(stderr,"\n");
-    for (int i_CI = i_th; i_CI<Na; i_CI+=n_th)/// must be optimized!!!!!!!
-    for (int j_CI = 0; j_CI<Nb; j_CI++){//fprintf(stderr,"\r3b CI=%d/%d          \n",i_CI*Nb+j_CI,Na*Nb);
-//         getchar();
-
-        memset(bit_a,0,N*sizeof(int));
-        memset(bit_b,0,N*sizeof(int));
-        
-        for (int k=1; k<na+1; k++) bit_a[vec_a[i_CI*(na+1)+k]-1] = 1;
-        for (int k=1; k<nb+1; k++) bit_b[vec_b[j_CI*(nb+1)+k]-1] = 1;
-        
-        for(int t=0  ;t<N;t++){
-            if(bit_a[t]!=0){
-                bit_a[t]=0;
-                sign1=1;
-                for(int u=t+1;u<N;u++)if(bit_a[u]!=0){
-                    bit_a[u]=0;
-                    sign2=1;
-                    for(int v=0;v<N;v++){
-                        if(bit_a[v]==0){
-                            bit_a[v]=1;
-                            sign5=sign2;
-                            for(int w=v+1  ;w<N;w++){
-                                if(bit_a[w]==0){
-                                    bit_a[w]=1;
-                                    sign4=1;
-                                    for(int x=0  ;x<N;x++)if(bit_b[x]!=0){
-                                        bit_b[x]=0;
-                                        sign6=1;
-                                        for(int y=0  ;y<N;y++){
-                                            if(bit_b[y]==0){
-                                                bit_b[y]=1;
-                                                auto i_CIext = get_ind_from_ON(bit_a, N, na, fa, buf);
-                                                auto j_CIext = get_ind_from_ON(bit_b, N, nb, fb, buf);
-                                                
-                                                sign=sign1*sign2*sign4*sign5*sign6;
-                                                
-                                                R = RF+(((((t*N+u)*N+v)*N+w)*N+x)*N+y)*N_fit;
-                                                for(int i_s=0;i_s<n_s;i_s++){
-                                                    Rc =0;
-                                                    L = L_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    S = S_fit[(i_CI*Nb+j_CI)*n_s+i_s];
-                                                    C = C_fit+(2*n_fit_pol+1)*((i_CI*Nb+j_CI)*n_s+i_s);
-                                                    Rc+=ddot(L,R+S, 1, C, 1);
-                                                    CI_0 = ci+(i_CI*Nb+j_CI)*ld;
-                                                    Rc =Rc*CI_0[i_s]*sign;
-                                                    CI_e = ci+(i_CIext*Nb+j_CIext)*ld;
-                                                    for(int j_s=0;j_s<n_s;j_s++)
-                                                        P[i_s*n_s+j_s]+=Rc*CI_e[j_s];
-                                                }
-                                                bit_b[y]=0;
-                                                
-                                            }
-                                            else
-                                                sign6=-sign6;
-                                        }
-                                        bit_b[x]=1;
-                                        sign4=-sign4;
-                                    }
-                                    bit_a[w]=0;
-                                }
-                                else
-                                    sign5=-sign5;
+// the doubles E_tu E_vw (t < u occupied, v < w empty after removing t, u) of every string, signs as res_fit_calc_3body_AB accumulates them
+static void rf_build_doubles(rf_rep_list & L, int N, int n, int Ns, const int * vec, int * f){
+    std::vector<int> bit(N), buf(n + 2, 0);
+    L.off.assign(Ns + 1, 0); L.ext.clear(); L.orb.clear(); L.sgn.clear();
+    for(int i = 0; i < Ns; i++){
+        std::fill(bit.begin(), bit.end(), 0);
+        for(int k = 1; k < n + 1; k++) bit[vec[i * (n + 1) + k] - 1] = 1;
+        for(int t = 0; t < N; t++) if(bit[t]){
+            bit[t] = 0; int s1 = 1;
+            for(int u = t + 1; u < N; u++) if(bit[u]){
+                bit[u] = 0; int s2 = 1;
+                for(int v = 0; v < N; v++){
+                    if(!bit[v]){
+                        bit[v] = 1; int s5 = s2;
+                        for(int w = v + 1; w < N; w++){
+                            if(!bit[w]){
+                                bit[w] = 1;
+                                L.ext.push_back(get_ind_from_ON(bit.data(), N, n, f, buf.data()));
+                                L.orb.push_back(((t * N + u) * N + v) * N + w);
+                                L.sgn.push_back((signed char)(s1 * s2 * s5));
+                                bit[w] = 0;
                             }
                             else s5 = -s5;
                         }
