@@ -13,6 +13,7 @@
 #include "defaults.h"
 #include "common_vars.h"
 #include "inp_out.h"
+#include "grabbers.h"
 
 
 const char*ny{"no yes"};
@@ -85,6 +86,171 @@ int backup_code_print(int a){
     if(a==2) fprintf(out_stream,"calc and write (%d)\n",a);
     return 0;
 }
+
+//geometry optimization
+
+opt_par::opt_par(){
+    
+    y=0;
+    
+    numerical=0;
+    
+    n_s=0;
+    
+    e_conv = OPT_EN_CON_DEFAULT;
+    g_conv = OPT_GR_CON_DEFAULT;
+    s_conv = OPT_STEP_CON_DEFAULT;
+    
+    max_it= OPT_MAX_IT_DEFAULT;
+    n_bfgs= OPT_BFGS_N_DEFAULT;
+    
+    exit_cond = {2};
+
+};
+
+int opt_par::read_group(char * inp){
+    
+    
+    grab_E=1;
+    
+    recursive_file P;
+    char line[BUF_LINE_LENGTH];
+    
+    P.r_open(inp);
+        
+    P.r_gets(line,BUF_LINE_LENGTH);;
+    while((key_word_comp(line, opt_group_start)==0)&&(!P.r_eof()))P.r_gets(line,BUF_LINE_LENGTH);;
+    if(key_word_comp(line, opt_group_start)==0){
+        fprintf(out_stream,"WARNING: could not find $OPT group in file %s\n",inp);
+        return 0;
+    }
+    
+    while(!P.r_eof()){
+        read_line(line);
+        if(key_word_comp(line, opt_group_end))break;
+        P.r_gets(line,BUF_LINE_LENGTH);;
+    }
+    
+    return 0;
+}
+
+int wrong_exit_cond(int a){
+    
+    fprintf(out_stream,"ERROR: unrecognized optimization exit code %d.\n Use the following codes:",a);
+    fprintf(out_stream,"- energy (1)\n",a);
+    fprintf(out_stream,"- gradient (2)\n",a);
+    fprintf(out_stream,"- step length (4)\n",a);
+    fprintf(out_stream,"- energy and gradient (3)\n",a);
+    fprintf(out_stream,"- energy and step length (5)\n",a);
+    fprintf(out_stream,"- gradient and step length (6)\n",a);
+    fprintf(out_stream,"- energy and gradient and step length (7)\n",a);
+    
+    exit(EXIT_FAILURE);
+    
+    return 0;
+}
+    
+
+int opt_par::read_line(char * inp){
+    
+    if(key_word_comp(inp, max_it_kw)){
+        max_it = kw_to_i(inp, max_it_kw, OPT_MAX_IT_DEFAULT);
+    }
+    if(key_word_comp(inp, e_conv_kw)){
+        e_conv = kw_to_f(inp, e_conv_kw, OPT_EN_CON_DEFAULT);
+    }
+    if(key_word_comp(inp, g_conv_kw)){
+        g_conv = kw_to_f(inp, g_conv_kw, OPT_GR_CON_DEFAULT);
+    }
+    if(key_word_comp(inp, s_conv_kw)){
+        s_conv = kw_to_f(inp, s_conv_kw, OPT_STEP_CON_DEFAULT);
+    }
+    if(key_word_comp(inp, n_bfgs_vec_kw)){
+        n_bfgs = kw_to_i(inp, n_bfgs_vec_kw, OPT_BFGS_N_DEFAULT);
+    }
+    
+    if(key_word_comp(inp, num_state_kw)){
+        n_s = kw_to_i(inp, num_state_kw, 0);
+    }
+    
+    if(key_word_comp(inp, num_grad_kw)){
+        numerical=1;
+    }
+    
+    if(key_word_comp(inp, exit_kw)){
+        int n = kw_count(inp, exit_kw, ';');
+        exit_cond.resize(n);
+        kw_to_i_v(&exit_cond, inp, exit_kw, n);
+        for(auto &e: exit_cond) {
+            if(e<1) wrong_exit_cond(e);
+            if(e>7) wrong_exit_cond(e);
+        }
+    }
+    
+    
+    return 0;
+}
+
+int print_exit_cond(int a){
+    
+    if(a==1) fprintf(out_stream,"     - energy (%d)\n",a);
+    if(a==2) fprintf(out_stream,"     - gradient (%d)\n",a);
+    if(a==4) fprintf(out_stream,"     - step length (%d)\n",a);
+    if(a==3) fprintf(out_stream,"     - energy and gradient (%d)\n",a);
+    if(a==5) fprintf(out_stream,"     - energy and step length (%d)\n",a);
+    if(a==6) fprintf(out_stream,"     - gradient and step length (%d)\n",a);
+    if(a==7) fprintf(out_stream,"     - energy and gradient and step length (%d)\n",a);
+    return 0;
+}
+int opt_par::write_info(){
+    
+    int s;
+    fprintf(out_stream,"\n\n\n");
+    fprintf(out_stream,"_____________________Starting_geometry_optimization____________________\n\n");
+    fprintf(out_stream,"Target state:                        %d\n",n_s);
+    fprintf(out_stream,"Energy convergence:                  %e\n",e_conv);
+    fprintf(out_stream,"Gradient convergence:                %e\n",g_conv);
+    fprintf(out_stream,"Step length convergence:             %e\n",s_conv);
+    fprintf(out_stream,"Maximum number of steps:             %d\n",max_it);
+    fprintf(out_stream,"Number l-bfgs correlation vectors:   %d\n",n_bfgs);
+    fprintf(out_stream,"\n");
+    fprintf(out_stream,"Exit condition(s):\n");
+    for(auto &e: exit_cond) print_exit_cond(e);
+    fprintf(out_stream,"\n");
+//     fprintf(out_stream,"Folder for output files: %s\n",out_folder_name);
+    fprintf(out_stream,"_______________________________________________________________________\n\n\n");
+    
+    
+    return 0;
+    
+}
+
+int opt_par::check_conv( int n, double de, double g, double s){
+    
+    for(auto &e: exit_cond){
+        int check_E=e%2;
+        int check_g=e%4-check_E;
+        int check_s=e-check_g-check_E;
+        int conv=1;
+        if(check_E)if(de>e_conv)conv=0;
+        if(check_s)if(s >s_conv)conv=0;
+        if(check_g)if(g >g_conv)conv=0;
+        if(conv) return e;
+    }
+    
+    if(n==max_it) return 8;
+    
+    return 0;
+    
+}
+
+
+opt_par::~opt_par(){
+    
+}
+
+
+
 
 //RHF
 rhf_par::rhf_par(){
@@ -2160,6 +2326,9 @@ int inp_par::write_info(){
     fprintf(out_stream,"Spin-orbit                                       -     %c%c%c\n",ny[3*SO],ny[3*SO+1],ny[3*SO+2]);
     fprintf(out_stream,"Symmetry point group                             -     ");if(IS_SYM)fprintf(out_stream,"%s\n",point_group);
                                                                       else      fprintf(out_stream,"no(C1)\n");
+    fprintf(out_stream,"Tasks:\n");
+    fprintf(out_stream,"Energy                                           -     yes\n");
+    fprintf(out_stream,"Optimization                                     -     %c%c%c\n",ny[3*opt.y],ny[3*opt.y+1],ny[3*opt.y+2]);
     fprintf(out_stream,"Printing:\n");
     fprintf(out_stream,"dipole moment                                    -     %c%c%c\n",ny[3*print_dipole    ],ny[3*print_dipole    +1],ny[3*print_dipole    +2]);
     fprintf(out_stream,"electron dispersion                              -     %c%c%c\n",ny[3*print_dispersion],ny[3*print_dispersion+1],ny[3*print_dispersion+2]);
@@ -2354,7 +2523,8 @@ int inp_par::read(char * ext_inp){
     if(xmc.y) cas.y=1;
     if(cdas.y)cas.y=1;
     if(dsrg.y)cas.y=1;
-
+    
+    if(opt.y)  opt.read_group(inp_name);
     if(rhf.y)  rhf.read_group(inp_name);
     if(cas.y)  cas.read_group(inp_name);
     if(xmc.y)  xmc.read_group(inp_name,&cas);
@@ -2406,6 +2576,9 @@ int inp_par::read_p_line(char * inp){
     if(key_word_comp(inp, so_kw))
         SO = kw_to_i(inp, so_kw, 0);
     
+    
+    if(key_word_comp(inp, opt_kw))
+        opt.y=kw_to_i(inp, opt_kw,0);
     
     if(key_word_comp(inp, rhf_kw))
         rhf.y=kw_to_i(inp, rhf_kw,0);

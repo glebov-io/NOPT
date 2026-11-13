@@ -19,6 +19,13 @@
 # include "grabbers.h"
 # include "mp2.h"
 # include "avas.h"
+#include "integral_derivatives.h"
+#include "gradient_rhf.h"
+#include "gradient_casscf.h"
+#include "casscf_resp.h"
+#include "gradient_xmc.h"
+#include "dsrg_grad.h"
+
 
 extern coord_list C;
 
@@ -380,18 +387,82 @@ int hessian_calc(inp_par * P, molecule * Qm){
     return 0;
 }
 
-int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
+
+int num_grad_calc(double * G, inp_par * P, molecule * Qm, int n_s){
     
+    int n_c=3*Qm->n_atoms;
+    
+    double Ef, Eb;
+    
+    for(int i=0;i<n_c;i++){
+        fprintf(stderr,"move c%d forward\n",i);
+        Qm->atom_coord[i]+=0.01;
+        Qm->sync_shell_to_geom();
+        nopt_engines_link_mol(Qm);
+        if(RI)regen_RI_AA(Qm);
         
-    nopt_engines_link_mol(Qm);
+//         Qm->GAMESS_geom_print("0f.out");
+        single_point_calc(P,Qm);
+        Ef=E_grabbed_at(n_s);
+//         fprintf(out_stream,"E_0f= %.10f\n",Ef);
+        
+        Qm->atom_coord[i]-=0.01;
+        
+        fprintf(stderr,"move c%d backward\n",i);
+        Qm->atom_coord[i]-=0.01;
+        Qm->sync_shell_to_geom();
+        nopt_engines_link_mol(Qm);
+        if(RI)regen_RI_AA(Qm);
+        
+//         Qm->GAMESS_geom_print("0b.out");
+        single_point_calc(P,Qm);
+        Eb=E_grabbed_at(n_s);
+        Qm->atom_coord[i]+=0.01;
+        
+        G[i]=0.5*(Ef-Eb)/0.01;
+    }
+    
+    return 0;
+}
+
+int grad_calc(double * G, inp_par * P, molecule * Qm, int n_s){
+    
+    
+    if(P->opt.numerical){
+        num_grad_calc(G, P, Qm, n_s);
+        return 0;
+    }
+    
+    if(P->rhf.y=1)
+        rhf_gradient(Qm, G);
+    else{
+        fprintf(out_stream,"Analytical gradient is turned on only for RHF.\n");
+        exit(EXIT_FAILURE);
+    }
+        
+    
+    return 0;
+}
+
+int optimization( inp_par * P, molecule * Qm, int recalc){
+    
+    
+    char * name = new char[BUF_LINE_LENGTH];
+    
+    P->opt.write_info();
+    
+    int n_s = P->opt.n_s;
+    
+    double E0, E_old,dE;
     grab_E=1;
+    nopt_engines_link_mol(Qm);
     
-//     FILE * calc=fopen("calc.log","w");
-//     out_stream=calc;
+    printf("STEP   0:\n\n");
     
-    single_point_calc(P,Qm);
+    sprintf(name,"%s_opt_step%d.log",P->job_name,0);
+    set_out_stream_by_name(name, "w");
+    if(recalc)single_point_calc(P,Qm);
     
-    double E0, Ef, Eb, E_old;
     E0=E_grabbed_at(n_s);
     E_old = E0+100.0;
     
@@ -411,35 +482,14 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
     BFGS.init(n_c,10);
     int i_r=0;
     double s_max, g_max;
+    dE=fabs(E0);
+    int conv=0;
     while(true){
+        
         E_old=E0;
-        for(int i=0;i<n_c;i++){
-            fprintf(stderr,"move c%d forward\n",i);
-            Qm->atom_coord[i]+=0.01;
-            Qm->sync_shell_to_geom();
-            nopt_engines_link_mol(Qm);
-            if(RI)regen_RI_AA(Qm);
-            
-//             Qm->GAMESS_geom_print("0f.out");
-            single_point_calc(P,Qm);
-            Ef=E_grabbed_at(n_s);
-//             fprintf(out_stream,"E_0f= %.10f\n",Ef);
-            
-            Qm->atom_coord[i]-=0.01;
-            
-            fprintf(stderr,"move c%d backward\n",i);
-            Qm->atom_coord[i]-=0.01;
-            Qm->sync_shell_to_geom();
-            nopt_engines_link_mol(Qm);
-            if(RI)regen_RI_AA(Qm);
-            
-//             Qm->GAMESS_geom_print("0b.out");
-            single_point_calc(P,Qm);
-            Eb=E_grabbed_at(n_s);
-            Qm->atom_coord[i]+=0.01;
-            
-            G[i]=0.5*(Ef-Eb)/0.01;
-        }
+        
+        grad_calc(G, P, Qm, n_s);
+        
         fprintf(grad,"G:\n");
         fPrintMatr(grad,G,1,n_c,0);
         BFGS.step(s, G, H, do_nothing, do_nothing, n_c,0.1);
@@ -452,34 +502,64 @@ int optimization_w_num_grad_calc( inp_par * P, molecule * Qm, int n_s){
         if(RI)regen_RI_AA(Qm);
         
         Qm->GAMESS_geom_print("current.out");
-        single_point_calc(P,Qm);
-        E0=E_grabbed_at(n_s);
+        
         s_max=0;
         g_max=0;
         for(int j=0;j<n_c;j++){
             if(s_max<fabs(s[j]))s_max=fabs(s[j]);
             if(g_max<fabs(G[j]))g_max=fabs(G[j]);
         }
+        
+        printf("Gradient calculation done:\n");
+        printf("|dE |                    - %.3e\n",dE);
+        printf("maximum gradient element - %.3e\n", g_max);
+        printf("maximum   step   element - %.3e\n", s_max);
+        printf("_______________________________________________________________________\n");
+        fflush(stdout);
+        
+        
+        printf("\nSTEP %3d:\n\n",i_r+1);
+        sprintf(name,"%s_opt_step%d.log",P->job_name,i_r+1);
+        set_out_stream_by_name(name, "w");
+        
+        single_point_calc(P,Qm);
+        
+        E0=E_grabbed_at(n_s);
+        dE=fabs(E0-E_old);
+        printf("\nE= %.10f\n",E0);
+        
+        
         fprintf(grad,"E= %.10f\n",E0);
         fprintf(grad,"dE= %e s=%e, g=%e\n",E0-E_old, s_max, g_max);
         fflush(grad);
         
-        if((fabs(E0-E_old)<1E-7)&&(g_max<3e-5)){
-            fprintf(out_stream,"Optimization converged\n");
-            break;
-        }
-        if((s_max<1E-4)&&(g_max<3e-5)){
-            fprintf(out_stream,"Optimization converged\n");
+        conv = P->opt.check_conv(i_r+1, dE, g_max, s_max);
+        if(conv){
             break;
         }
         i_r++;
-        if(i_r>100){
-            fprintf(out_stream,"Optimization did not converge\n");
-            break;
-        }
-        
-    }    
+    }
     
+    printf("\n");
+    
+    if(conv==1) printf("Energy converged\n");
+    if(conv==2) printf("Gradient converged\n");
+    if(conv==4) printf("Step length converged\n");
+    if(conv==3) printf("Energy and gradient converged\n");
+    if(conv==5) printf("Energy and step length converged\n");
+    if(conv==6) printf("Gradient and step length converged\n");
+    if(conv==7) printf("Energy, gradient and step length converged\n");
+    if(conv==8) printf("Optimization did not converge after %d steps\n", i_r+1);
+
+    printf("_______________________________________________________________________\n\n");
+    fflush(stdout);
+    
+    set_out_stream_stdout();
+    
+    
+    
+    
+    delete[] name;
     
     return 0;
 }

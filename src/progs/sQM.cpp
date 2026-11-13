@@ -19,6 +19,8 @@
 # include "z_matrix.h"
 // # include "CIS.h"
 # include "QM_calc.h"
+#include "integral_derivatives.h"
+
 
 int print_welcome_table(char * P_name){
     
@@ -92,6 +94,13 @@ int main ( int argc , char ** argv )
     // M.MO_gamess_format();
     // M.GAMESS_type_out_print("orb.out",-1);
     single_point_calc(&P, &M);
+    
+    if(P.opt.y){
+        nopt_deriv_engines_initialize(&M);
+        optimization(&P, &M,0);
+    }
+
+        
    
     nopt_finalize();
     

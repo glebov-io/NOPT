@@ -2,6 +2,11 @@
 
 using namespace std;
 
+extern vector<const char *>opt_kw               ;
+extern vector<const char *>opt_group_start      ;
+extern vector<const char *>opt_group_end        ;
+extern vector<const char *>exit_kw              ;
+extern vector<const char *>num_grad_kw          ;
 extern vector<const char *>rhf_kw               ;
 extern vector<const char *>rhf_group_start      ;
 extern vector<const char *>rhf_group_end        ;

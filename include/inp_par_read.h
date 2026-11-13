@@ -20,6 +20,39 @@ class backup_par // read/write/calc
         ~backup_par();
 };
 
+class opt_par
+{
+    public:
+        int y;
+        
+        int n_s;
+        
+        int numerical;
+        double e_conv;
+        double g_conv;
+        double s_conv;
+        
+        int max_it;
+        int n_bfgs;
+        std::vector<int> exit_cond;
+        //exit codes:
+        // e - energy only (1)
+        // g - gradient only (2)
+        // s - step only (4)
+        // e+g - e and g (3)
+        // e+s - e and g (5)
+        // g+s - e and g (6)
+        // e+g+s - e and g and s (7)
+        opt_par();
+        int read_group(char * inp); 
+        int read_line(char * inp); 
+        int write_info();
+        int check_conv( int n, double de, double g, double s);
+        ~opt_par();
+        
+};
+
+
 class rhf_par
 {
     public:
@@ -376,6 +409,7 @@ class inp_par
         xmc_par xmc;
         cdas_par cdas;
         dsrg_par dsrg;
+        opt_par opt;
         
 //         int charge;
 //         int parsing_done;

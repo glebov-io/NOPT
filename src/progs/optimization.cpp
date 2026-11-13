@@ -19,6 +19,7 @@
 # include "z_matrix.h"
 // # include "CIS.h"
 # include "QM_calc.h"
+#include "integral_derivatives.h"
 
 int print_welcome_table(char * P_name){
     
@@ -87,7 +88,10 @@ int main ( int argc , char ** argv )
     
     char * report_name = new char[BUF_LINE_LENGTH];
     
-    optimization_w_num_grad_calc(&P, &M,0);
+    single_point_calc(&P, &M);
+    
+    nopt_deriv_engines_initialize(&M);
+    optimization(&P, &M,0);
     
     nopt_finalize();
     

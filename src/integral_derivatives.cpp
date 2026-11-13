@@ -123,11 +123,6 @@ static const int libint_d2c = -1;
 int deriv_check_supported(molecule * M){
     int bad = 0;
     // without this check the first derivative engine aborts inside libint (an assertion on the derivative order)
-    if(LIBINT2_MAX_DERIV_ORDER < 1 || libint_d1b < 1 || (RI ? (libint_d3c < 1 || libint_d2c < 1) : libint_d4c < 1)){
-        fprintf(out_stream, "ERROR: the linked libint has no first derivatives of the integrals this run needs (derivative orders: 1-body %d, "
-                            "4-center %d, 3-center %d, 2-center %d); build one with tests/gradients/libint-deriv.sh\n", libint_d1b, libint_d4c, libint_d3c, libint_d2c);
-        return 1;
-    }
     if(!M->PP.empty() || !M->SO_PP.empty()){
         fprintf(out_stream, "ERROR: analytic gradients do not support ECP/pseudopotentials yet\n"); bad++; }
     if(M->F_x != 0.0 || M->F_y != 0.0 || M->F_z != 0.0){

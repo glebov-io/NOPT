@@ -82,3 +82,12 @@
 #define AVAS_REF_BASIS_DEFAULT "cc-pvtz-minao"   // $AVAS reference minimal basis (H-Kr)
 #define AVAS_NCORE_DEFAULT 0                     // $AVAS leading occupied orbitals left out of the projection
 #define AVAS_CANONICALIZE_DEFAULT 0              // $AVAS Fock canonicalization within each block (0 = off)
+
+
+#define OPT_EN_CON_DEFAULT 1e-7
+#define OPT_GR_CON_DEFAULT 3e-5
+#define OPT_STEP_CON_DEFAULT 1e-4
+#define OPT_MAX_IT_DEFAULT 50
+#define OPT_BFGS_N_DEFAULT 10
+
+

@@ -7,6 +7,20 @@
 
 using namespace std;
 
+vector<const char *>opt_kw{{"opt"},
+                           {"optimize"}};
+
+vector<const char *>opt_group_start{{"$opt"}};
+
+vector<const char *>opt_group_end{{"$optend"},
+                                  {"$end"}};
+
+vector<const char *>exit_kw{{"exit"},
+                            {"converged"}};
+
+vector<const char *>num_grad_kw{{"num_grad"},
+                                {"numerical"}};
+
 vector<const char *>rhf_kw{{"rhf"}};
 
 vector<const char *>rhf_group_start{{"$rhf"}};
@@ -32,7 +46,9 @@ vector<const char *>guess_sad_kw{{"sad"}};
                          
 vector<const char *>max_it_kw{{"maxit"},
                               {"max_iter"},
-                              {"max_iters"}};
+                              {"max_iters"},
+                              {"max_step"},
+                              {"max_steps"}};
 
 vector<const char *>e_conv_kw{{"de"},
                               {"deltae"},
